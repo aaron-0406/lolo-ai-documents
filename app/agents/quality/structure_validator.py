@@ -1,0 +1,142 @@
+"""
+StructureValidatorAgent - Validates document structure completeness.
+"""
+
+import re
+from typing import Any
+
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage, SystemMessage
+from loguru import logger
+from pydantic import BaseModel
+
+from app.config import settings
+from app.models.schemas import CaseContext
+from app.prompts.validators import STRUCTURE_VALIDATOR_PROMPT
+
+
+class ValidationResult(BaseModel):
+    """Result of validation."""
+
+    passed: bool
+    issues_found: list[str]
+    improvements_made: list[str]
+    improved_draft: str | None = None
+
+
+class StructureValidatorAgent:
+    """
+    Validates that the document has all required sections complete.
+    Part of the quality control pipeline (Level 3).
+    """
+
+    def __init__(self):
+        self.llm = ChatAnthropic(
+            model=settings.claude_model,
+            max_tokens=8000,
+            api_key=settings.anthropic_api_key,
+        )
+
+    async def validate_and_improve(
+        self,
+        draft: str,
+        context: CaseContext,
+        document_type: str,
+    ) -> ValidationResult:
+        """
+        Validate document structure and improve if needed.
+
+        Args:
+            draft: Current document draft
+            context: Case file context
+            document_type: Type of document being validated
+
+        Returns:
+            ValidationResult with validation status and improved draft
+        """
+        logger.info(f"StructureValidator validating: {document_type}")
+
+        messages = [
+            SystemMessage(content=STRUCTURE_VALIDATOR_PROMPT),
+            HumanMessage(content=f"""TIPO DE DOCUMENTO: {document_type}
+
+DOCUMENTO A VALIDAR:
+{draft}
+"""),
+        ]
+
+        try:
+            response = await self.llm.ainvoke(messages)
+            return self._parse_result(response.content, draft)
+        except Exception as e:
+            logger.error(f"Structure validation failed: {e}")
+            return ValidationResult(
+                passed=False,
+                issues_found=[str(e)],
+                improvements_made=[],
+                improved_draft=None,
+            )
+
+    def _parse_result(self, content: str, original_draft: str) -> ValidationResult:
+        """Parse the validation result from LLM response."""
+        issues_found = []
+        improvements_made = []
+        improved_draft = None
+
+        # Extract validation section
+        validation_match = re.search(
+            r"<validacion>(.*?)</validacion>",
+            content,
+            re.DOTALL | re.IGNORECASE,
+        )
+
+        if validation_match:
+            validation_text = validation_match.group(1)
+            # Find missing sections (marked with [ ])
+            missing = re.findall(r"\[ \]\s*(.+?)(?:\n|$)", validation_text)
+            for item in missing:
+                issues_found.append(f"Sección faltante: {item.strip()}")
+
+        # Extract corrected document
+        doc_match = re.search(
+            r"<documento_corregido>(.*?)</documento_corregido>",
+            content,
+            re.DOTALL | re.IGNORECASE,
+        )
+
+        if doc_match:
+            candidate_draft = doc_match.group(1).strip()
+            # Only use improved draft if it looks like a real document (not just evaluation text)
+            # Real documents should be substantial and contain legal document markers
+            if (candidate_draft
+                and len(candidate_draft) > 500  # Minimum length for a real document
+                and candidate_draft != original_draft
+                and not candidate_draft.upper().startswith(("VALIDACIÓN", "VALIDACION", "RESULTADO", "APROBADO", "EL DOCUMENTO"))):
+                improved_draft = candidate_draft
+                improvements_made.append("Documento corregido con secciones faltantes")
+
+        # Extract improvements
+        improvements_match = re.search(
+            r"<mejoras>(.*?)</mejoras>",
+            content,
+            re.DOTALL | re.IGNORECASE,
+        )
+
+        if improvements_match:
+            improvements_text = improvements_match.group(1)
+            for line in improvements_text.split("\n"):
+                line = line.strip()
+                if line.startswith("-"):
+                    improvements_made.append(line[1:].strip())
+
+        # Determine if passed
+        passed = len(issues_found) == 0 or (
+            improved_draft is not None and len(improvements_made) > 0
+        )
+
+        return ValidationResult(
+            passed=passed,
+            issues_found=issues_found,
+            improvements_made=improvements_made,
+            improved_draft=improved_draft,
+        )

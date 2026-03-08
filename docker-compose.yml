@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  lolo-ai-documents:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lolo-ai-documents
+    ports:
+      - "8000:8000"
+    environment:
+      # Anthropic API
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-sonnet-4-20250514}
+
+      # MySQL Database (shared with lolo-backend)
+      # Sessions are stored in JUDICIAL_AI_DOCUMENT_SESSION table
+      - MYSQL_HOST=${MYSQL_HOST:-localhost}
+      - MYSQL_PORT=${MYSQL_PORT:-3306}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-db_lolo}
+
+      # AWS S3
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION:-us-west-2}
+      - AWS_BUCKET_NAME=${AWS_BUCKET_NAME:-archivosstorage}
+
+      # Session TTL (4 hours, matches lolo-backend)
+      - SESSION_TTL_SECONDS=${SESSION_TTL_SECONDS:-14400}
+
+      # Rate limiting
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-30}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - lolo-network
+
+networks:
+  lolo-network:
+    driver: bridge
