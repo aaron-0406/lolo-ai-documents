@@ -10,14 +10,20 @@ from pydantic import BaseModel, Field
 
 
 class DocumentCategory(str, Enum):
-    """Document categories."""
+    """Document categories - must match frontend DocumentCategory type."""
 
+    # Main categories (match frontend)
+    OBLIGACIONES = "obligaciones"
+    GARANTIAS = "garantias"
+    MEDIDAS_CAUTELARES = "medidas_cautelares"
+    ESCRITOS_PROCESALES = "escritos_procesales"
     EJECUCION = "ejecucion"
     RECURSOS = "recursos"
-    MEDIDAS_CAUTELARES = "medidas_cautelares"
+    LITIGIOS_CIVILES = "litigios_civiles"
+    CONSTITUCIONAL_LABORAL = "constitucional_laboral"
+
+    # Legacy/internal categories (for document type definitions)
     DEMANDAS = "demandas"
-    ESCRITOS_PROCESALES = "escritos_procesales"
-    GARANTIAS = "garantias"
     ACCIONES_CIVILES = "acciones_civiles"
     OTROS = "otros"
 

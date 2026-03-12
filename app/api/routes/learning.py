@@ -162,7 +162,6 @@ async def check_similarity(
         existing_learnings = await learning_applier.get_learnings_for_generation(
             customer_id=request.customer_id,
             document_type=request.document_type,
-            case_context=None,
         )
 
         if not existing_learnings:

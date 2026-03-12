@@ -154,11 +154,20 @@ class GeneratorAgent:
         learning_prompt_section = ""
         if settings.learning_enabled and context.customer_id:
             try:
+                logger.info(f"[LEARNINGS] Fetching learnings for customer={context.customer_id}, doc_type={document_type}")
+
+                # Get all learnings from backend, filter locally
                 learnings = await learning_applier.get_learnings_for_generation(
                     customer_id=context.customer_id,
                     document_type=document_type,
-                    case_context=context.model_dump() if context else None,
                 )
+                logger.info(f"[LEARNINGS] Retrieved {len(learnings) if learnings else 0} learnings from backend")
+
+                # Filter by appliesWhen conditions using local context
+                if learnings and context:
+                    before_filter = len(learnings)
+                    learnings = learning_applier.filter_by_context(learnings, context)
+                    logger.info(f"[LEARNINGS] After filter: {len(learnings)} (filtered out {before_filter - len(learnings)})")
 
                 if learnings:
                     learning_prompt_section = learning_applier.format_learnings_for_prompt(
@@ -167,6 +176,7 @@ class GeneratorAgent:
                     )
                     learnings_applied = len(learnings)
                     learning_ids = [l.learning_id for l in learnings]
+                    logger.info(f"[LEARNINGS] Formatted prompt section ({len(learning_prompt_section)} chars)")
 
                     # Record applications (non-blocking)
                     if session_id:
@@ -179,16 +189,21 @@ class GeneratorAgent:
 
                     logger.info(f"Applying {learnings_applied} learnings to generation")
                     agents_used.append(f"LearningApplier:{learnings_applied}")
+                else:
+                    logger.warning("[LEARNINGS] No learnings after filtering!")
 
             except Exception as e:
                 logger.error(f"Error applying learnings: {e}")
                 # Continue without learnings if there's an error
+        else:
+            logger.warning(f"[LEARNINGS] Skipped - learning_enabled={settings.learning_enabled}, customer_id={context.customer_id}")
 
         # Combine custom instructions with learnings
         combined_instructions = self._combine_instructions(
             custom_instructions,
             learning_prompt_section,
         )
+        logger.info(f"[LEARNINGS] Combined instructions: {len(combined_instructions) if combined_instructions else 0} chars")
 
         # Step 1: Select and run specialist
         specialist_key = self._select_specialist(document_type)
@@ -218,10 +233,12 @@ class GeneratorAgent:
             logger.info(f"Running validator: {validator_name}")
 
             try:
+                # Pass learnings to validators so they can apply override logic
                 result = await validator.validate_and_improve(
                     draft=current_draft,
                     context=context,
                     document_type=document_type,
+                    custom_instructions=combined_instructions,
                 )
 
                 validation_results.append({

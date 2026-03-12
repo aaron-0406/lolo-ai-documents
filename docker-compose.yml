@@ -35,6 +35,11 @@ services:
 
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+      # Backend API (for learning system)
+      - BACKEND_URL=${BACKEND_URL:-http://host.docker.internal:5000}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY:-lolo-internal-api-key-2026-secure}
+      - LEARNING_ENABLED=${LEARNING_ENABLED:-true}
     volumes:
       - ./logs:/app/logs
     restart: unless-stopped

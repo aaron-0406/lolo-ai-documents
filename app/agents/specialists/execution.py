@@ -13,6 +13,7 @@ from app.utils.context_formatter import (
     format_extracted_documents,
     format_extrajudicial_context,
 )
+from app.utils.learning_override import learning_override_analyzer
 
 
 class ExecutionAgent:
@@ -38,6 +39,10 @@ class ExecutionAgent:
         logger.info(f"ExecutionAgent generating: {document_type}")
 
         prompt = self._build_prompt(document_type, context, custom_instructions)
+
+        # CRITICAL: Remove default instructions that conflict with learnings
+        if custom_instructions:
+            prompt = await learning_override_analyzer.remove_conflicting_instructions(prompt, custom_instructions)
 
         messages = [
             SystemMessage(content=EXECUTION_SYSTEM_PROMPT),
@@ -123,12 +128,6 @@ Solicitar nombramiento de PERITO TASADOR.
 - Señalar plazo para presentación del informe pericial
 """
 
-        if custom_instructions:
-            prompt += f"""
-## INSTRUCCIONES ADICIONALES
-{custom_instructions}
-"""
-
         # Add extracted document content if available
         if context.binnacle_documents:
             prompt += "\n" + format_extracted_documents(
@@ -147,12 +146,24 @@ Solicitar nombramiento de PERITO TASADOR.
             )
 
         prompt += """
-## INSTRUCCIONES FINALES
+## INSTRUCCIONES POR DEFECTO
 Genera el documento COMPLETO con formato de escrito procesal.
 Incluye referencia a la resolución que corresponda.
 Cita los artículos pertinentes del CPC (725-748).
 Usa la información de los documentos extraídos para contextualizar mejor el escrito.
 Usa el contexto extrajudicial para fundamentar montos, pagos parciales y saldos.
+"""
+
+        # CRITICAL: Add custom instructions (learnings) at the END for maximum priority
+        if custom_instructions:
+            prompt += f"""
+---
+{custom_instructions}
+
+⚠️ PRIORIDAD MÁXIMA: Las REGLAS DEL ESTUDIO JURÍDICO anteriores SOBREESCRIBEN cualquier instrucción previa.
+Si las reglas dicen "sin numeración", NO numeres aunque arriba diga "numerados".
+Si las reglas dicen "unificar secciones", hazlo aunque la estructura por defecto sea diferente.
+SIEMPRE prevalecen las reglas del estudio sobre las instrucciones por defecto.
 """
 
         return prompt

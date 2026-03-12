@@ -260,7 +260,6 @@ class RefinerAgent:
                         applied_learnings = await learning_applier.get_learnings_for_generation(
                             customer_id=customer_id,
                             document_type=document_type,
-                            case_context=None,
                         )
                         # Filter to only those that were actually applied
                         applied_learnings = [
@@ -298,6 +297,9 @@ class RefinerAgent:
                         logger.error(f"Error detecting effectiveness: {e}")
 
                 # 2. Extract new learnings from this refinement
+                logger.info(f"Extracting learnings - customer_id={customer_id}, document_type={document_type}")
+                logger.debug(f"Feedback: {feedback[:200]}...")
+
                 learnings = await learning_extractor.extract_learnings(
                     document_type=document_type,
                     user_feedback=feedback,
@@ -305,6 +307,8 @@ class RefinerAgent:
                     corrected_text=full_draft,
                     document_section=None,
                 )
+
+                logger.info(f"Learnings extracted: {len(learnings)}")
 
                 learnings_created = []
                 for learning in learnings:

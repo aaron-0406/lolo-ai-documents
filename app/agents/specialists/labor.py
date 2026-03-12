@@ -13,6 +13,7 @@ from app.utils.context_formatter import (
     format_extracted_documents,
     format_extrajudicial_context,
 )
+from app.utils.learning_override import learning_override_analyzer
 
 
 class LaborAgent:
@@ -38,6 +39,10 @@ class LaborAgent:
         logger.info(f"LaborAgent generating: {document_type}")
 
         prompt = self._build_prompt(document_type, context, custom_instructions)
+
+        # CRITICAL: Remove default instructions that conflict with learnings
+        if custom_instructions:
+            prompt = await learning_override_analyzer.remove_conflicting_instructions(prompt, custom_instructions)
 
         messages = [
             SystemMessage(content=LABOR_SYSTEM_PROMPT),
@@ -203,12 +208,6 @@ ESCRITO DE ALEGATOS
 Después de la actuación probatoria, antes de sentencia
 """
 
-        if custom_instructions:
-            prompt += f"""
-## INSTRUCCIONES ADICIONALES
-{custom_instructions}
-"""
-
         # Add extracted document content if available
         if context.binnacle_documents:
             prompt += "\n" + format_extracted_documents(
@@ -227,13 +226,25 @@ Después de la actuación probatoria, antes de sentencia
             )
 
         prompt += """
-## INSTRUCCIONES FINALES
+## INSTRUCCIONES POR DEFECTO
 Genera el documento COMPLETO con todos los elementos requeridos.
 Recuerda que el banco es el EMPLEADOR DEMANDADO.
 Cita los artículos de la NLPT y normas laborales aplicables.
 Enfócate en la defensa del empleador y los beneficios debidamente pagados.
 Usa la información de los documentos extraídos como contexto adicional.
 Si hay historial de cobranza o acuerdos previos, úsalos para contextualizar la relación laboral.
+"""
+
+        # CRITICAL: Add custom instructions (learnings) at the END for maximum priority
+        if custom_instructions:
+            prompt += f"""
+---
+{custom_instructions}
+
+⚠️ PRIORIDAD MÁXIMA: Las REGLAS DEL ESTUDIO JURÍDICO anteriores SOBREESCRIBEN cualquier instrucción previa.
+Si las reglas dicen "sin numeración", NO numeres aunque arriba diga "numerados".
+Si las reglas dicen "unificar secciones", hazlo aunque la estructura por defecto sea diferente.
+SIEMPRE prevalecen las reglas del estudio sobre las instrucciones por defecto.
 """
 
         return prompt

@@ -13,6 +13,7 @@ from app.utils.context_formatter import (
     format_extracted_documents,
     format_extrajudicial_context,
 )
+from app.utils.learning_override import learning_override_analyzer
 
 
 class AppealsAgent:
@@ -38,6 +39,10 @@ class AppealsAgent:
         logger.info(f"AppealsAgent generating: {document_type}")
 
         prompt = self._build_prompt(document_type, context, custom_instructions)
+
+        # CRITICAL: Remove default instructions that conflict with learnings
+        if custom_instructions:
+            prompt = await learning_override_analyzer.remove_conflicting_instructions(prompt, custom_instructions)
 
         messages = [
             SystemMessage(content=APPEALS_SYSTEM_PROMPT),
@@ -180,12 +185,6 @@ RECURSO DE REPOSICIÓN
 - Resuelve el mismo juez
 """
 
-        if custom_instructions:
-            prompt += f"""
-## INSTRUCCIONES ADICIONALES
-{custom_instructions}
-"""
-
         # Add extracted document content if available (especially relevant for appeals)
         if context.binnacle_documents:
             prompt += "\n" + format_extracted_documents(
@@ -204,13 +203,25 @@ RECURSO DE REPOSICIÓN
             )
 
         prompt += """
-## INSTRUCCIONES FINALES
+## INSTRUCCIONES POR DEFECTO
 Genera el documento COMPLETO con todos los elementos requeridos.
 Fundamenta claramente el agravio y la pretensión impugnatoria.
 Cita los artículos específicos del CPC que correspondan.
-IMPORTANTE: Usa el contenido de los documentos extraídos para fundamentar el recurso,
+Usa el contenido de los documentos extraídos para fundamentar el recurso,
 especialmente el contenido de la resolución que se está impugnando.
 Si hay acuerdos de pago incumplidos o historial de cobranza, úsalos como evidencia adicional del agravio.
+"""
+
+        # CRITICAL: Add custom instructions (learnings) at the END for maximum priority
+        if custom_instructions:
+            prompt += f"""
+---
+{custom_instructions}
+
+⚠️ PRIORIDAD MÁXIMA: Las REGLAS DEL ESTUDIO JURÍDICO anteriores SOBREESCRIBEN cualquier instrucción previa.
+Si las reglas dicen "sin numeración", NO numeres aunque arriba diga "numerados".
+Si las reglas dicen "unificar secciones", hazlo aunque la estructura por defecto sea diferente.
+SIEMPRE prevalecen las reglas del estudio sobre las instrucciones por defecto.
 """
 
         return prompt

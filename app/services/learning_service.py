@@ -115,13 +115,33 @@ Analiza el feedback y responde SOLO con un JSON válido (sin markdown):
       "instruction": "La regla clara y completa que debe aplicarse",
       "instruction_summary": "Resumen corto (máx 100 caracteres)",
       "document_section": "petitorio|fundamentos_hecho|fundamentos_derecho|medios_probatorios|anexos|null",
-      "applies_when": {{"condicion": "valor"}} o null,
+      "applies_when": {{"campo": "valor"}} o null,
       "priority": 50-80,
       "is_generalizable": true o false
     }}
   ],
   "no_learnings_reason": "Razón si no se extrajo ninguna lección (opcional)"
 }}
+
+IMPORTANTE sobre applies_when:
+- Usar null si la regla aplica a TODOS los casos del mismo tipo de documento
+- Usar condiciones solo si la regla aplica a casos específicos según el contexto
+- NUNCA incluir "document_type" (ya se filtra automáticamente)
+
+Campos disponibles del contexto del caso (usar solo si el feedback indica una condición específica):
+- "procedural_way": vía procedimental (ej: "EJECUTIVO", "CONOCIMIENTO", "UNICO DE EJECUCION")
+- "subject": materia del caso (ej: "OBLIGACION DE DAR SUMA DE DINERO", "EJECUCION DE GARANTIAS")
+- "bank_name": nombre del banco (ej: "BCP", "INTERBANK", "SCOTIABANK")
+- "court": juzgado
+- "secretary": secretario
+- "process_status": estado del proceso
+- "customer_name": nombre del cliente/empresa
+- "client_name": nombre del demandado
+
+Ejemplos:
+- Regla general: "applies_when": null
+- Solo vía ejecutiva: "applies_when": {{"procedural_way": "EJECUTIVO"}}
+- Solo para BCP: "applies_when": {{"bank_name": "BCP"}}
 
 Si no hay lecciones generalizables, devuelve: {{"learnings": [], "no_learnings_reason": "Explicación"}}
 """
@@ -510,35 +530,36 @@ class LearningApplier:
         self,
         customer_id: int,
         document_type: str,
-        case_context: Optional[dict[str, Any]] = None,
     ) -> list[StoredLearning]:
         """
-        Get applicable learnings for a document generation.
+        Get learnings for a document generation.
 
         Args:
             customer_id: Customer ID
             document_type: Type of document being generated
-            case_context: Optional case context for conditional filtering
 
         Returns:
-            List of applicable learnings
+            List of learnings (filter locally with filter_by_context if needed)
         """
         if not settings.learning_enabled:
             return []
 
         try:
+            url = f"{settings.backend_url}/api/v1/judicial/ai-learning/internal/for-generation"
+            logger.debug(f"Calling learning endpoint: {url}")
+
             response = await self.http_client.post(
-                f"{settings.backend_url}/api/v1/judicial/ai-learning/internal/for-generation",
+                url,
                 headers={"X-Internal-Api-Key": settings.internal_api_key},
                 json={
                     "customer_id": customer_id,
                     "document_type": document_type,
-                    "case_context": case_context,
                 },
             )
 
             if response.status_code != 200:
-                logger.warning(f"Failed to get learnings: {response.status_code}")
+                logger.warning(f"Failed to get learnings: {response.status_code} - URL: {url}")
+                logger.warning(f"Response body: {response.text[:500]}")
                 return []
 
             data = response.json()
@@ -565,6 +586,65 @@ class LearningApplier:
         except Exception as e:
             logger.error(f"Error getting learnings: {e}")
             return []
+
+    def filter_by_context(
+        self,
+        learnings: list[StoredLearning],
+        context: Any,
+    ) -> list[StoredLearning]:
+        """
+        Filter learnings based on appliesWhen conditions using the case context.
+
+        Args:
+            learnings: List of learnings to filter
+            context: Case context object with attributes like procedural_way, subject, etc.
+
+        Returns:
+            Filtered list of learnings that match the context
+        """
+        if not learnings:
+            return []
+
+        filtered = []
+        for learning in learnings:
+            if self._matches_context(learning.applies_when, context):
+                filtered.append(learning)
+
+        if len(filtered) < len(learnings):
+            logger.debug(f"Filtered learnings: {len(learnings)} -> {len(filtered)}")
+
+        return filtered
+
+    def _matches_context(
+        self,
+        applies_when: Optional[dict[str, Any]],
+        context: Any,
+    ) -> bool:
+        """Check if a learning's appliesWhen conditions match the context."""
+        # No conditions = always applies
+        if not applies_when:
+            return True
+
+        # Fields to skip (already filtered at database level or not in context)
+        skip_fields = {"document_type", "documentType"}
+
+        # Check each condition
+        for key, expected_value in applies_when.items():
+            # Skip fields that are filtered elsewhere
+            if key in skip_fields:
+                continue
+
+            actual_value = getattr(context, key, None)
+            if actual_value is None:
+                # Also try dict access if context is a dict
+                if isinstance(context, dict):
+                    actual_value = context.get(key)
+
+            if actual_value != expected_value:
+                logger.debug(f"Learning filtered: {key}={actual_value} != {expected_value}")
+                return False
+
+        return True
 
     def format_learnings_for_prompt(
         self,

@@ -3,6 +3,7 @@ LegalValidatorAgent - Validates legal citations and arguments.
 """
 
 import re
+from typing import Optional
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -12,6 +13,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.models.schemas import CaseContext
 from app.prompts.validators import LEGAL_VALIDATOR_PROMPT
+from app.utils.learning_override import learning_override_analyzer
 
 
 class ValidationResult(BaseModel):
@@ -41,6 +43,7 @@ class LegalValidatorAgent:
         draft: str,
         context: CaseContext,
         document_type: str,
+        custom_instructions: Optional[str] = None,
     ) -> ValidationResult:
         """
         Validate legal citations and improve if needed.
@@ -49,21 +52,43 @@ class LegalValidatorAgent:
             draft: Current document draft
             context: Case file context
             document_type: Type of document being validated
+            custom_instructions: Customer learnings/rules to apply (overrides default behavior)
 
         Returns:
             ValidationResult with validation status and improved draft
         """
         logger.info(f"LegalValidator validating: {document_type}")
 
-        messages = [
-            SystemMessage(content=LEGAL_VALIDATOR_PROMPT),
-            HumanMessage(content=f"""TIPO DE DOCUMENTO: {document_type}
+        # Build the system prompt, applying override if learnings exist
+        system_prompt = LEGAL_VALIDATOR_PROMPT
+        if custom_instructions:
+            system_prompt = await learning_override_analyzer.remove_conflicting_instructions(
+                system_prompt,
+                custom_instructions,
+            )
+            logger.info(f"[LEGAL_VALIDATOR] Applied learning override to system prompt")
+
+        # Build user prompt
+        user_prompt = f"""TIPO DE DOCUMENTO: {document_type}
 MATERIA: {context.subject or 'N/A'}
 VÍA PROCEDIMENTAL: {context.procedural_way or 'N/A'}
 
 DOCUMENTO A VALIDAR:
 {draft}
-"""),
+"""
+        # Add learnings to user prompt
+        if custom_instructions:
+            user_prompt += f"""
+---
+{custom_instructions}
+
+⚠️ IMPORTANTE: Las REGLAS DEL ESTUDIO JURÍDICO tienen MÁXIMA PRIORIDAD.
+RESPETA el formato del documento si cumple con las reglas del estudio.
+"""
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
         ]
 
         try:

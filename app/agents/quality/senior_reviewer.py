@@ -3,6 +3,7 @@ SeniorReviewerAgent - Final professional review of documents.
 """
 
 import re
+from typing import Optional
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -12,6 +13,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.models.schemas import CaseContext
 from app.prompts.validators import SENIOR_REVIEWER_PROMPT
+from app.utils.learning_override import learning_override_analyzer
 
 
 class ValidationResult(BaseModel):
@@ -43,6 +45,7 @@ class SeniorReviewerAgent:
         draft: str,
         context: CaseContext,
         document_type: str,
+        custom_instructions: Optional[str] = None,
     ) -> ValidationResult:
         """
         Perform final senior review and improve if needed.
@@ -51,21 +54,46 @@ class SeniorReviewerAgent:
             draft: Current document draft
             context: Case file context
             document_type: Type of document being validated
+            custom_instructions: Customer learnings/rules to apply (overrides default behavior)
 
         Returns:
             ValidationResult with validation status, score, and improved draft
         """
         logger.info(f"SeniorReviewer reviewing: {document_type}")
 
-        messages = [
-            SystemMessage(content=SENIOR_REVIEWER_PROMPT),
-            HumanMessage(content=f"""TIPO DE DOCUMENTO: {document_type}
+        # Build the system prompt, applying override if learnings exist
+        system_prompt = SENIOR_REVIEWER_PROMPT
+        if custom_instructions:
+            system_prompt = await learning_override_analyzer.remove_conflicting_instructions(
+                system_prompt,
+                custom_instructions,
+            )
+            logger.info(f"[SENIOR_REVIEWER] Applied learning override to system prompt")
+
+        # Build user prompt
+        user_prompt = f"""TIPO DE DOCUMENTO: {document_type}
 EXPEDIENTE: {context.case_number}
 CLIENTE: {context.client_name}
 
 DOCUMENTO A REVISAR:
 {draft}
-"""),
+"""
+        # Add learnings to user prompt
+        if custom_instructions:
+            user_prompt += f"""
+---
+{custom_instructions}
+
+⚠️ IMPORTANTE: Las REGLAS DEL ESTUDIO JURÍDICO tienen MÁXIMA PRIORIDAD.
+Si las reglas dicen "sin numeración", el documento SIN numeración está CORRECTO.
+Si las reglas dicen "unificar secciones", el documento CON secciones unificadas está CORRECTO.
+NO penalices ni "mejores" el formato si cumple con las reglas del estudio.
+RESPETA las preferencias del cliente.
+"""
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
         ]
 
         try:

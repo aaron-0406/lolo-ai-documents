@@ -11,22 +11,23 @@ router = APIRouter()
 
 
 # Category metadata (display name and icon)
+# Keys must match frontend DocumentCategory type
 CATEGORY_META = {
-    "DEMANDAS": {"name": "Demandas", "icon": "FileText"},
-    "DOCUMENTOS_EJECUCION": {"name": "Documentos de Ejecución", "icon": "Gavel"},
-    "RECURSOS": {"name": "Recursos", "icon": "Scale"},
-    "MEDIDAS_CAUTELARES": {"name": "Medidas Cautelares", "icon": "Shield"},
-    "ESCRITOS_PROCESALES": {"name": "Escritos Procesales", "icon": "FileEdit"},
-    "GARANTIAS": {"name": "Garantías", "icon": "Lock"},
-    "ACCIONES_CIVILES": {"name": "Acciones Civiles", "icon": "Briefcase"},
-    "CONSTITUCIONAL": {"name": "Constitucional", "icon": "BookOpen"},
-    "LABORAL": {"name": "Laboral", "icon": "Users"},
+    "obligaciones": {"name": "Obligaciones", "icon": "FileText"},
+    "garantias": {"name": "Garantías", "icon": "Lock"},
+    "medidas_cautelares": {"name": "Medidas Cautelares", "icon": "Shield"},
+    "escritos_procesales": {"name": "Escritos Procesales", "icon": "FileEdit"},
+    "ejecucion": {"name": "Ejecución", "icon": "Gavel"},
+    "recursos": {"name": "Recursos", "icon": "Scale"},
+    "litigios_civiles": {"name": "Litigios Civiles", "icon": "Briefcase"},
+    "constitucional_laboral": {"name": "Const. y Laboral", "icon": "BookOpen"},
 }
 
 
 # Document type catalog - organized by category
+# Keys must match frontend DocumentCategory type
 DOCUMENT_TYPES: dict[str, list[DocumentType]] = {
-    "DEMANDAS": [
+    "obligaciones": [
         DocumentType(
             key="demanda_ods",
             name="Demanda de Obligación de Dar Suma de Dinero",
@@ -51,76 +52,26 @@ DOCUMENT_TYPES: dict[str, list[DocumentType]] = {
             specialist="obligations",
             required_data=["client", "contract", "debt_amount"],
         ),
-    ],
-    "DOCUMENTOS_EJECUCION": [
         DocumentType(
-            key="solicitud_tasacion",
-            name="Solicitud de Tasación",
-            category=DocumentCategory.EJECUCION,
-            description="Solicitud de tasación del bien para remate",
-            specialist="execution",
-            required_data=["collateral"],
-        ),
-        DocumentType(
-            key="solicitud_remate",
-            name="Solicitud de Remate",
-            category=DocumentCategory.EJECUCION,
-            description="Solicitud de convocatoria a remate público",
-            specialist="execution",
-            required_data=["collateral", "base_price"],
-        ),
-        DocumentType(
-            key="adjudicacion",
-            name="Solicitud de Adjudicación",
-            category=DocumentCategory.EJECUCION,
-            description="Solicitud de adjudicación directa del bien",
-            specialist="execution",
-            required_data=["collateral", "auction_result"],
-        ),
-        DocumentType(
-            key="lanzamiento",
-            name="Solicitud de Lanzamiento",
-            category=DocumentCategory.EJECUCION,
-            description="Solicitud de desalojo/lanzamiento del inmueble",
-            specialist="execution",
-            required_data=["collateral", "adjudication"],
+            key="liquidacion_deuda",
+            name="Liquidación de Deuda",
+            category=DocumentCategory.DEMANDAS,
+            description="Cálculo y presentación de liquidación de deuda",
+            specialist="obligations",
+            required_data=["debt_details", "interests"],
         ),
     ],
-    "RECURSOS": [
+    "garantias": [
         DocumentType(
-            key="apelacion_auto",
-            name="Recurso de Apelación de Auto",
-            category=DocumentCategory.RECURSOS,
-            description="Apelación contra auto judicial (5 días hábiles)",
-            specialist="appeals",
-            required_data=["resolution", "grievances"],
-        ),
-        DocumentType(
-            key="apelacion_sentencia",
-            name="Recurso de Apelación de Sentencia",
-            category=DocumentCategory.RECURSOS,
-            description="Apelación contra sentencia (10 días hábiles)",
-            specialist="appeals",
-            required_data=["sentence", "grievances"],
-        ),
-        DocumentType(
-            key="casacion",
-            name="Recurso de Casación",
-            category=DocumentCategory.RECURSOS,
-            description="Recurso de casación ante la Corte Suprema",
-            specialist="appeals",
-            required_data=["sentence", "cassation_grounds"],
-        ),
-        DocumentType(
-            key="queja",
-            name="Recurso de Queja",
-            category=DocumentCategory.RECURSOS,
-            description="Queja por denegatoria de apelación o casación",
-            specialist="appeals",
-            required_data=["denied_appeal", "grievances"],
+            key="incautacion_mobiliaria",
+            name="Solicitud de Incautación Mobiliaria",
+            category=DocumentCategory.GARANTIAS,
+            description="Incautación de bienes muebles en garantía mobiliaria",
+            specialist="guarantees",
+            required_data=["movable_collateral"],
         ),
     ],
-    "MEDIDAS_CAUTELARES": [
+    "medidas_cautelares": [
         DocumentType(
             key="medida_cautelar_embargo",
             name="Medida Cautelar de Embargo",
@@ -146,7 +97,7 @@ DOCUMENT_TYPES: dict[str, list[DocumentType]] = {
             required_data=["property_registry"],
         ),
     ],
-    "ESCRITOS_PROCESALES": [
+    "escritos_procesales": [
         DocumentType(
             key="escrito_impulso",
             name="Escrito de Impulso Procesal",
@@ -188,25 +139,75 @@ DOCUMENT_TYPES: dict[str, list[DocumentType]] = {
             required_data=["modifications"],
         ),
     ],
-    "GARANTIAS": [
+    "ejecucion": [
         DocumentType(
-            key="incautacion_mobiliaria",
-            name="Solicitud de Incautación Mobiliaria",
-            category=DocumentCategory.GARANTIAS,
-            description="Incautación de bienes muebles en garantía mobiliaria",
-            specialist="guarantees",
-            required_data=["movable_collateral"],
+            key="solicitud_tasacion",
+            name="Solicitud de Tasación",
+            category=DocumentCategory.EJECUCION,
+            description="Solicitud de tasación del bien para remate",
+            specialist="execution",
+            required_data=["collateral"],
         ),
         DocumentType(
-            key="liquidacion_deuda",
-            name="Liquidación de Deuda",
-            category=DocumentCategory.GARANTIAS,
-            description="Cálculo y presentación de liquidación de deuda",
-            specialist="obligations",
-            required_data=["debt_details", "interests"],
+            key="solicitud_remate",
+            name="Solicitud de Remate",
+            category=DocumentCategory.EJECUCION,
+            description="Solicitud de convocatoria a remate público",
+            specialist="execution",
+            required_data=["collateral", "base_price"],
+        ),
+        DocumentType(
+            key="adjudicacion",
+            name="Solicitud de Adjudicación",
+            category=DocumentCategory.EJECUCION,
+            description="Solicitud de adjudicación directa del bien",
+            specialist="execution",
+            required_data=["collateral", "auction_result"],
+        ),
+        DocumentType(
+            key="lanzamiento",
+            name="Solicitud de Lanzamiento",
+            category=DocumentCategory.EJECUCION,
+            description="Solicitud de desalojo/lanzamiento del inmueble",
+            specialist="execution",
+            required_data=["collateral", "adjudication"],
         ),
     ],
-    "ACCIONES_CIVILES": [
+    "recursos": [
+        DocumentType(
+            key="apelacion_auto",
+            name="Recurso de Apelación de Auto",
+            category=DocumentCategory.RECURSOS,
+            description="Apelación contra auto judicial (5 días hábiles)",
+            specialist="appeals",
+            required_data=["resolution", "grievances"],
+        ),
+        DocumentType(
+            key="apelacion_sentencia",
+            name="Recurso de Apelación de Sentencia",
+            category=DocumentCategory.RECURSOS,
+            description="Apelación contra sentencia (10 días hábiles)",
+            specialist="appeals",
+            required_data=["sentence", "grievances"],
+        ),
+        DocumentType(
+            key="casacion",
+            name="Recurso de Casación",
+            category=DocumentCategory.RECURSOS,
+            description="Recurso de casación ante la Corte Suprema",
+            specialist="appeals",
+            required_data=["sentence", "cassation_grounds"],
+        ),
+        DocumentType(
+            key="queja",
+            name="Recurso de Queja",
+            category=DocumentCategory.RECURSOS,
+            description="Queja por denegatoria de apelación o casación",
+            specialist="appeals",
+            required_data=["denied_appeal", "grievances"],
+        ),
+    ],
+    "litigios_civiles": [
         DocumentType(
             key="accion_pauliana",
             name="Demanda de Acción Pauliana",
@@ -224,7 +225,7 @@ DOCUMENT_TYPES: dict[str, list[DocumentType]] = {
             required_data=["void_act", "nullity_ground"],
         ),
     ],
-    "CONSTITUCIONAL": [
+    "constitucional_laboral": [
         DocumentType(
             key="demanda_amparo",
             name="Demanda de Amparo",
@@ -241,8 +242,6 @@ DOCUMENT_TYPES: dict[str, list[DocumentType]] = {
             specialist="constitutional",
             required_data=["amparo_denial", "grievances"],
         ),
-    ],
-    "LABORAL": [
         DocumentType(
             key="contestacion_laboral",
             name="Contestación de Demanda Laboral",

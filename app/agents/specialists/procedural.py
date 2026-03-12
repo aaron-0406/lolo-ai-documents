@@ -13,6 +13,7 @@ from app.utils.context_formatter import (
     format_extracted_documents,
     format_extrajudicial_context,
 )
+from app.utils.learning_override import learning_override_analyzer
 
 
 class ProceduralAgent:
@@ -36,8 +37,25 @@ class ProceduralAgent:
     ) -> str:
         """Generate a document draft for procedural matters."""
         logger.info(f"ProceduralAgent generating: {document_type}")
+        if custom_instructions:
+            logger.info(f"[LEARNINGS] Custom instructions received ({len(custom_instructions)} chars):\n{custom_instructions[:800]}")
+        else:
+            logger.warning("[LEARNINGS] No custom instructions received!")
 
         prompt = self._build_prompt(document_type, context, custom_instructions)
+
+        # Log if learnings are in the prompt
+        if "REGLAS DEL ESTUDIO" in prompt:
+            logger.info("[LEARNINGS] ✓ Learnings ARE included in prompt")
+        else:
+            logger.warning("[LEARNINGS] ✗ Learnings NOT found in prompt")
+
+        # CRITICAL: Remove default instructions that conflict with learnings
+        if custom_instructions:
+            prompt = await learning_override_analyzer.remove_conflicting_instructions(prompt, custom_instructions)
+
+        # Log the complete prompt for debugging
+        logger.info(f"[PROMPT] Complete prompt being sent to LLM ({len(prompt)} chars):\n{'='*50}\n{prompt}\n{'='*50}")
 
         messages = [
             SystemMessage(content=PROCEDURAL_SYSTEM_PROMPT),
@@ -138,12 +156,6 @@ DESISTIMIENTO del proceso/pretensión.
 [Describir el petitorio específico del escrito]
 """
 
-        if custom_instructions:
-            prompt += f"""
-## INSTRUCCIONES ADICIONALES
-{custom_instructions}
-"""
-
         # Add extracted document content if available
         if context.binnacle_documents:
             prompt += "\n" + format_extracted_documents(
@@ -162,7 +174,7 @@ DESISTIMIENTO del proceso/pretensión.
             )
 
         prompt += """
-## INSTRUCCIONES FINALES
+## INSTRUCCIONES POR DEFECTO
 Genera el documento COMPLETO con formato de escrito procesal.
 Incluye fundamentos claros y numerados.
 Cita los artículos pertinentes del CPC.
@@ -171,6 +183,18 @@ Usa el contexto extrajudicial para:
 - Fundamentar urgencia o necesidad de impulso
 - Evidenciar gestiones previas y diligencia
 - Incluir información relevante de la cobranza prejudicial
+"""
+
+        # CRITICAL: Add custom instructions (learnings) at the END for maximum priority
+        if custom_instructions:
+            prompt += f"""
+---
+{custom_instructions}
+
+⚠️ PRIORIDAD MÁXIMA: Las REGLAS DEL ESTUDIO JURÍDICO anteriores SOBREESCRIBEN cualquier instrucción previa.
+Si las reglas dicen "sin numeración", NO numeres aunque arriba diga "numerados".
+Si las reglas dicen "unificar secciones", hazlo aunque la estructura por defecto sea diferente.
+SIEMPRE prevalecen las reglas del estudio sobre las instrucciones por defecto.
 """
 
         return prompt

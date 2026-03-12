@@ -13,6 +13,7 @@ from app.utils.context_formatter import (
     format_extracted_documents,
     format_extrajudicial_context,
 )
+from app.utils.learning_override import learning_override_analyzer
 
 
 class CivilLitigationAgent:
@@ -38,6 +39,10 @@ class CivilLitigationAgent:
         logger.info(f"CivilLitigationAgent generating: {document_type}")
 
         prompt = self._build_prompt(document_type, context, custom_instructions)
+
+        # CRITICAL: Remove default instructions that conflict with learnings
+        if custom_instructions:
+            prompt = await learning_override_analyzer.remove_conflicting_instructions(prompt, custom_instructions)
 
         messages = [
             SystemMessage(content=CIVIL_LITIGATION_SYSTEM_PROMPT),
@@ -161,12 +166,6 @@ NULIDAD DE ACTO JURÍDICO
 - Art. 475 CPC: Proceso de conocimiento
 """
 
-        if custom_instructions:
-            prompt += f"""
-## INSTRUCCIONES ADICIONALES
-{custom_instructions}
-"""
-
         # Add extracted document content if available
         if context.binnacle_documents:
             prompt += "\n" + format_extracted_documents(
@@ -185,13 +184,25 @@ NULIDAD DE ACTO JURÍDICO
             )
 
         prompt += """
-## INSTRUCCIONES FINALES
+## INSTRUCCIONES POR DEFECTO
 Genera el documento COMPLETO con todos los elementos requeridos.
-Incluye fundamentos de hecho detallados y numerados.
+Incluye fundamentos de hecho y derecho detallados y numerados.
 Cita los artículos específicos del Código Civil y CPC.
 Lista todos los medios probatorios necesarios.
 Usa la información de los documentos extraídos como contexto adicional.
 Si hay acuerdos de pago incumplidos o historial de cobranza, úsalos para acreditar el eventus damni y consilium fraudis.
+"""
+
+        # CRITICAL: Add custom instructions (learnings) at the END for maximum priority
+        if custom_instructions:
+            prompt += f"""
+---
+{custom_instructions}
+
+⚠️ PRIORIDAD MÁXIMA: Las REGLAS DEL ESTUDIO JURÍDICO anteriores SOBREESCRIBEN cualquier instrucción previa.
+Si las reglas dicen "sin numeración", NO numeres aunque arriba diga "numerados".
+Si las reglas dicen "unificar secciones", hazlo aunque la estructura por defecto sea diferente.
+SIEMPRE prevalecen las reglas del estudio sobre las instrucciones por defecto.
 """
 
         return prompt
