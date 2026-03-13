@@ -244,13 +244,12 @@ class RefinerAgent:
         """
         Refine with streaming and extract learnings.
 
+        NOTE: This method is kept for backwards compatibility with the SSE endpoint.
+        The recommended approach is to use the sync endpoint (/refine-sync) which
+        handles learning extraction in a background task.
+
         Yields all the same chunks as refine_stream, plus:
         - learnings: Information about extracted learnings (at the end)
-        - effectiveness: Results of effectiveness detection for previously applied learnings
-
-        Args:
-            applied_learning_ids: Optional list of learning IDs that were applied
-                                  during the original generation (for effectiveness tracking)
         """
         # Track the full draft for learning extraction
         full_draft = ""
@@ -260,96 +259,13 @@ class RefinerAgent:
                 full_draft = chunk["content"]
             yield chunk
 
-        # After streaming completes, extract learnings and check effectiveness
+        # NOTE: Learning extraction in streaming mode is skipped to avoid connection timeouts.
+        # Use the /refine-sync endpoint instead, which handles learning in background.
         if settings.learning_enabled and customer_id and full_draft:
-            try:
-                # 1. Detect effectiveness of previously applied learnings
-                if applied_learning_ids:
-                    try:
-                        # Get the applied learnings details
-                        applied_learnings = await learning_applier.get_learnings_for_generation(
-                            customer_id=customer_id,
-                            document_type=document_type,
-                        )
-                        # Filter to only those that were actually applied
-                        applied_learnings = [
-                            l for l in applied_learnings
-                            if l.learning_id in applied_learning_ids
-                        ]
-
-                        if applied_learnings:
-                            effectiveness_results = await effectiveness_detector.detect_effectiveness(
-                                applied_learnings=applied_learnings,
-                                original_text=current_draft,
-                                user_feedback=feedback,
-                                corrected_text=full_draft,
-                            )
-
-                            # Update effectiveness in backend
-                            for result in effectiveness_results:
-                                learning_id = result.get("learning_id")
-                                was_effective = result.get("was_effective", True)
-                                # Note: We need the application_id to mark effectiveness
-                                # This would require tracking which application record to update
-                                logger.info(
-                                    f"Learning {learning_id} effectiveness: {was_effective} - {result.get('reason', '')}"
-                                )
-
-                            yield {
-                                "type": "effectiveness",
-                                "content": {
-                                    "checked": len(effectiveness_results),
-                                    "results": effectiveness_results,
-                                }
-                            }
-
-                    except Exception as e:
-                        logger.error(f"Error detecting effectiveness: {e}")
-
-                # 2. Extract new learnings from this refinement
-                logger.info(f"Extracting learnings - customer_id={customer_id}, document_type={document_type}")
-                logger.debug(f"Feedback: {feedback[:200]}...")
-
-                learnings = await learning_extractor.extract_learnings(
-                    document_type=document_type,
-                    user_feedback=feedback,
-                    original_text=current_draft,
-                    corrected_text=full_draft,
-                    document_section=None,
-                )
-
-                logger.info(f"Learnings extracted: {len(learnings)}")
-
-                learnings_created = []
-                for learning in learnings:
-                    learning_id = await learning_backend.create_learning(
-                        customer_id=customer_id,
-                        document_type=document_type,
-                        learning=learning,
-                        source_session_id=session_id,
-                        source_case_file_id=case_file_id,
-                        created_by_user_id=user_id,
-                    )
-                    if learning_id:
-                        learnings_created.append({
-                            "learning_id": learning_id,
-                            "instruction_summary": learning.instruction_summary or learning.instruction[:100],
-                            "learning_type": learning.learning_type,
-                        })
-
-                if learnings_created:
-                    yield {
-                        "type": "learnings",
-                        "content": {
-                            "count": len(learnings_created),
-                            "learnings": learnings_created,
-                        }
-                    }
-
-            except Exception as e:
-                logger.error(f"Error extracting learnings in stream: {e}", exc_info=True)
-                # Don't fail the stream - learnings are optional
-                # Just log the error and continue
+            logger.info(
+                f"Skipping inline learning extraction for streaming mode. "
+                f"Use /refine-sync endpoint for learning extraction."
+            )
 
     def _build_messages(
         self,
