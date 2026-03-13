@@ -20,6 +20,7 @@ from app.services.learning_service import (
     ExtractedLearning,
     StoredLearning,
 )
+from app.utils.llm_worker import submit_to_worker
 
 
 class RefinerAgent:
@@ -28,10 +29,12 @@ class RefinerAgent:
     Maintains conversation context for incremental changes.
     Supports SSE streaming for real-time token delivery.
     Extracts learnings from user feedback for future use.
+    Uses Sonnet for high-quality refinement.
     """
 
     def __init__(self):
-        self.llm = ChatAnthropic(
+        # Streaming LLM for real-time response (streaming can't use worker)
+        self.llm_streaming = ChatAnthropic(
             model=settings.claude_model,
             max_tokens=8000,
             api_key=settings.anthropic_api_key,
@@ -61,7 +64,13 @@ class RefinerAgent:
             current_draft, feedback, context, chat_history
         )
 
-        response = await self.llm.ainvoke(messages)
+        # Use worker with Sonnet for high-quality refinement
+        response = await submit_to_worker(
+            messages=messages,
+            model=settings.claude_model,  # Sonnet
+            max_tokens=8000,
+            estimated_output_tokens=4000,
+        )
         return self._parse_response(response.content)
 
     async def refine_stream(
@@ -99,7 +108,8 @@ class RefinerAgent:
         changes_content = ""
 
         try:
-            async for chunk in self.llm.astream(messages):
+            # Note: Streaming uses direct LLM (can't use worker)
+            async for chunk in self.llm_streaming.astream(messages):
                 # Extract text from chunk
                 if hasattr(chunk, "content"):
                     token = chunk.content

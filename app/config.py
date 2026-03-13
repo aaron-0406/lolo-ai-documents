@@ -30,9 +30,20 @@ class Settings(BaseSettings):
 
     # Claude API (Anthropic)
     anthropic_api_key: str
-    claude_model: str = "claude-sonnet-4-20250514"
+    claude_model: str = "claude-sonnet-4-6"  # Modelo principal (generación)
+    claude_model_fast: str = "claude-haiku-4-5"  # Modelo rápido (validadores)
     claude_max_tokens: int = 8000
     claude_temperature: float = 0.3
+
+    # Rate Limits por modelo (Tier 1 defaults - ajustar según tu tier)
+    # Sonnet 4.6
+    sonnet_rpm: int = 50  # Requests per minute
+    sonnet_input_tpm: int = 40000  # Input tokens per minute
+    sonnet_output_tpm: int = 8000  # Output tokens per minute
+    # Haiku 4.5
+    haiku_rpm: int = 50  # Requests per minute
+    haiku_input_tpm: int = 50000  # Input tokens per minute
+    haiku_output_tpm: int = 10000  # Output tokens per minute
 
     # MySQL Database (Read-Only)
     mysql_host: str = "localhost"

@@ -54,6 +54,10 @@ async def generate_document(
     """
     logger.info(f"Generating document for case {case_file_id}: {request_body.document_type}")
 
+    # Initialize variables that might be referenced in exception handlers
+    session_id = request_body.session_id or f"ai-doc-{case_file_id}"
+    mysql = None
+
     try:
         # Validate document type
         doc_type = get_document_type_by_key(request_body.document_type)
@@ -82,8 +86,16 @@ async def generate_document(
             f"{len(context.binnacle_documents)} documents extracted"
         )
 
-        # Session is managed by backend - we just return the session_id they gave us
-        session_id = request_body.session_id or f"ai-doc-{case_file_id}"
+        # Mark generation as started - this allows backend to poll real status
+        try:
+            await mysql.update_generation_status(
+                session_id=session_id,
+                status="GENERATING",
+            )
+            logger.info(f"Set generation_status=GENERATING for session {session_id[:20]}...")
+        except Exception as e:
+            logger.warning(f"Failed to set GENERATING status: {e}")
+            # Continue anyway - generation should proceed
 
         # Run generator agent (with learning application)
         generator = GeneratorAgent()
@@ -182,4 +194,15 @@ async def generate_document(
 
     except Exception as e:
         logger.error(f"Error generating document for case {case_file_id}: {e}")
+        # Mark generation as failed so backend knows real status
+        if session_id and mysql:
+            try:
+                await mysql.update_generation_status(
+                    session_id=session_id,
+                    status="FAILED",
+                    error=str(e),
+                )
+                logger.info(f"Set generation_status=FAILED for session {session_id[:20]}...")
+            except Exception as status_err:
+                logger.warning(f"Failed to set FAILED status: {status_err}")
         raise HTTPException(status_code=500, detail=str(e))

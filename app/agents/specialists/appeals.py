@@ -2,7 +2,6 @@
 AppealsAgent - Specialist in Appeals and Cassation.
 """
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
 
@@ -14,20 +13,19 @@ from app.utils.context_formatter import (
     format_extrajudicial_context,
 )
 from app.utils.learning_override import learning_override_analyzer
+from app.utils.llm_worker import submit_to_worker
 
 
 class AppealsAgent:
     """
     Specialist in Appellate Law.
     Generates appeals, cassation, complaints, and reconsideration requests.
+    Uses Sonnet for high-quality document generation.
     """
 
     def __init__(self):
-        self.llm = ChatAnthropic(
-            model=settings.claude_model,
-            max_tokens=8000,
-            api_key=settings.anthropic_api_key,
-        )
+        # No LLM instance needed - using worker
+        pass
 
     async def generate_draft(
         self,
@@ -49,7 +47,13 @@ class AppealsAgent:
             HumanMessage(content=prompt),
         ]
 
-        response = await self.llm.ainvoke(messages)
+        # Use worker with Sonnet for high-quality generation
+        response = await submit_to_worker(
+            messages=messages,
+            model=settings.claude_model,  # Sonnet
+            max_tokens=8000,
+            estimated_output_tokens=4000,
+        )
         return response.content
 
     def _build_prompt(

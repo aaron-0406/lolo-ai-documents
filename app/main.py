@@ -24,6 +24,7 @@ from app.api.routes import analyze, generate, refine, finalize, document_types, 
 from app.services.mysql_service import MySQLService
 from app.services.s3_service import S3Service
 from app.services.document_context_service import DocumentContextService
+from app.utils.llm_worker import llm_worker
 
 
 # Rate limiter
@@ -80,10 +81,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     )
     logger.info("Document context service initialized")
 
+    # LLM Worker will auto-start on first request, but we log the config
+    logger.info(
+        f"LLM Worker configured - Sonnet: {settings.sonnet_output_tpm} output TPM, "
+        f"Haiku: {settings.haiku_output_tpm} output TPM"
+    )
+
     yield
 
     # Shutdown
     logger.info("Shutting down services...")
+
+    # Stop LLM worker
+    llm_worker.stop()
 
     # Cancel keepalive task
     if _keepalive_task:

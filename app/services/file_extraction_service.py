@@ -392,7 +392,7 @@ class FileExtractionService:
             image_base64 = base64.standard_b64encode(image_bytes).decode("utf-8")
 
             response = self.anthropic_client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=settings.claude_model,
                 max_tokens=500,
                 messages=[
                     {

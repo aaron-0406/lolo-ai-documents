@@ -448,6 +448,8 @@ class MySQLService:
                         conversation_history,
                         case_context,
                         status,
+                        generation_status,
+                        generation_error,
                         tokens_used,
                         applied_learning_ids,
                         created_by_customer_user_id,
@@ -501,7 +503,7 @@ class MySQLService:
         tokens_used: int = 0,
     ) -> bool:
         """
-        Update the current draft in a session.
+        Update the current draft in a session and mark generation as COMPLETED.
 
         Args:
             session_id: The session identifier
@@ -520,11 +522,46 @@ class MySQLService:
                     UPDATE JUDICIAL_AI_DOCUMENT_SESSION
                     SET current_draft = %s,
                         tokens_used = tokens_used + %s,
+                        generation_status = 'COMPLETED',
+                        generation_error = NULL,
                         updated_at = NOW()
                     WHERE session_id = %s
                     AND status = 'ACTIVE'
                 """
                 await cur.execute(query, (draft, tokens_used, session_id))
+                return cur.rowcount > 0
+
+    @with_retry(max_retries=3, delay=1.0)
+    async def update_generation_status(
+        self,
+        session_id: str,
+        status: str,
+        error: str = None,
+    ) -> bool:
+        """
+        Update the generation status of a session.
+
+        Args:
+            session_id: The session identifier
+            status: New status (NOT_STARTED, GENERATING, COMPLETED, FAILED)
+            error: Error message if status is FAILED
+
+        Returns:
+            True if updated, False if session not found
+        """
+        if not self._pool:
+            raise RuntimeError("MySQL not connected")
+
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                query = """
+                    UPDATE JUDICIAL_AI_DOCUMENT_SESSION
+                    SET generation_status = %s,
+                        generation_error = %s,
+                        updated_at = NOW()
+                    WHERE session_id = %s
+                """
+                await cur.execute(query, (status, error, session_id))
                 return cur.rowcount > 0
 
     @with_retry(max_retries=3, delay=1.0)

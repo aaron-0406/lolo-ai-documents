@@ -5,7 +5,6 @@ SeniorReviewerAgent - Final professional review of documents.
 import re
 from typing import Optional
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
 from pydantic import BaseModel
@@ -14,6 +13,7 @@ from app.config import settings
 from app.models.schemas import CaseContext
 from app.prompts.validators import SENIOR_REVIEWER_PROMPT
 from app.utils.learning_override import learning_override_analyzer
+from app.utils.llm_worker import submit_to_worker
 
 
 class ValidationResult(BaseModel):
@@ -31,14 +31,12 @@ class SeniorReviewerAgent:
     Final senior-level review of the document.
     Evaluates professional impact, persuasion, clarity, and details.
     Part of the quality control pipeline (Level 3).
+    Uses Haiku for fast validation.
     """
 
     def __init__(self):
-        self.llm = ChatAnthropic(
-            model=settings.claude_model,
-            max_tokens=8000,
-            api_key=settings.anthropic_api_key,
-        )
+        # No LLM instance needed - using worker
+        pass
 
     async def validate_and_improve(
         self,
@@ -97,7 +95,13 @@ RESPETA las preferencias del cliente.
         ]
 
         try:
-            response = await self.llm.ainvoke(messages)
+            # Use worker with Haiku for fast validation
+            response = await submit_to_worker(
+                messages=messages,
+                model=settings.claude_model_fast,  # Haiku
+                max_tokens=2000,
+                estimated_output_tokens=600,
+            )
             return self._parse_result(response.content, draft)
         except Exception as e:
             logger.error(f"Senior review failed: {e}")

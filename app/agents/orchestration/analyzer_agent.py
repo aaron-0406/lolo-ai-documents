@@ -6,7 +6,6 @@ import json
 from datetime import datetime
 from typing import Optional
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
 from pydantic import BaseModel
@@ -14,6 +13,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.models.schemas import CaseContext, DocumentSuggestion, NoActionReason
 from app.prompts.analyzer import ANALYZER_SYSTEM_PROMPT
+from app.utils.llm_worker import submit_to_worker
 
 
 class AnalysisResult(BaseModel):
@@ -29,14 +29,12 @@ class AnalyzerAgent:
     """
     Analyzes a judicial case file and determines the most appropriate
     document to generate based on the current procedural stage.
+    Uses Haiku for fast analysis.
     """
 
     def __init__(self):
-        self.llm = ChatAnthropic(
-            model=settings.claude_model,
-            max_tokens=4000,
-            api_key=settings.anthropic_api_key,
-        )
+        # No LLM instance needed - using worker
+        pass
 
     async def analyze(self, context: CaseContext) -> AnalysisResult:
         """
@@ -65,7 +63,13 @@ class AnalyzerAgent:
         ]
 
         try:
-            response = await self.llm.ainvoke(messages)
+            # Use worker with Haiku for fast analysis
+            response = await submit_to_worker(
+                messages=messages,
+                model=settings.claude_model_fast,  # Haiku
+                max_tokens=2000,
+                estimated_output_tokens=500,
+            )
             return self._parse_response(response.content)
         except Exception as e:
             logger.error(f"Error analyzing case file: {e}")

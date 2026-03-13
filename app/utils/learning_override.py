@@ -7,26 +7,22 @@ Uses an LLM for semantic analysis of contradictions.
 """
 
 import re
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from loguru import logger
 
 from app.config import settings
+from app.utils.llm_worker import submit_to_worker
 
 
 class LearningOverrideAnalyzer:
     """
     Analyzes and removes default instructions that contradict learnings.
-    Uses Claude Haiku for fast semantic analysis.
+    Uses Haiku for fast semantic analysis.
     """
 
     def __init__(self):
-        # LLM para detectar contradicciones (usa el modelo configurado en settings)
-        self.analyzer_llm = ChatAnthropic(
-            model=settings.claude_model,
-            max_tokens=500,
-            api_key=settings.anthropic_api_key,
-        )
+        # No LLM instance needed - using worker
+        pass
 
     async def detect_contradictions(
         self,
@@ -71,9 +67,13 @@ Ejemplos de contradicciones:
 Respuesta (solo números o NINGUNA):"""
 
         try:
-            response = await self.analyzer_llm.ainvoke([
-                HumanMessage(content=analysis_prompt)
-            ])
+            # Use worker with Haiku for fast analysis
+            response = await submit_to_worker(
+                messages=[HumanMessage(content=analysis_prompt)],
+                model=settings.claude_model_fast,  # Haiku
+                max_tokens=500,
+                estimated_output_tokens=100,
+            )
 
             result = response.content.strip().upper()
 

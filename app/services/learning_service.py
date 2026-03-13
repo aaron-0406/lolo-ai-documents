@@ -11,12 +11,12 @@ import json
 from typing import Any, Optional
 
 import httpx
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
 from pydantic import BaseModel
 
 from app.config import settings
+from app.utils.llm_worker import submit_to_worker
 
 
 # =============================================================================
@@ -238,16 +238,12 @@ class SimilarityResult(BaseModel):
 class SimilarityChecker:
     """
     Checks similarity between new and existing learnings.
-    Uses Claude to semantically compare learning instructions.
+    Uses Haiku for fast semantic comparison.
     """
 
     def __init__(self):
-        self.llm = ChatAnthropic(
-            model=settings.claude_model,
-            max_tokens=2000,
-            api_key=settings.anthropic_api_key,
-            temperature=0.1,
-        )
+        # No LLM instance needed - using worker
+        pass
 
     async def check_similarity(
         self,
@@ -289,7 +285,14 @@ class SimilarityChecker:
         ]
 
         try:
-            response = await self.llm.ainvoke(messages)
+            # Use worker with Haiku for fast analysis
+            response = await submit_to_worker(
+                messages=messages,
+                model=settings.claude_model_fast,  # Haiku
+                max_tokens=1000,
+                temperature=0.1,
+                estimated_output_tokens=300,
+            )
             content = response.content.strip()
 
             # Clean markdown code blocks if present
@@ -348,15 +351,12 @@ class EffectivenessDetector:
     """
     Detects whether applied learnings were effective by comparing
     original generated text with user corrections.
+    Uses Haiku for fast analysis.
     """
 
     def __init__(self):
-        self.llm = ChatAnthropic(
-            model=settings.claude_model,
-            max_tokens=2000,
-            api_key=settings.anthropic_api_key,
-            temperature=0.1,
-        )
+        # No LLM instance needed - using worker
+        pass
 
     async def detect_effectiveness(
         self,
@@ -399,7 +399,14 @@ class EffectivenessDetector:
         ]
 
         try:
-            response = await self.llm.ainvoke(messages)
+            # Use worker with Haiku for fast analysis
+            response = await submit_to_worker(
+                messages=messages,
+                model=settings.claude_model_fast,  # Haiku
+                max_tokens=1000,
+                temperature=0.1,
+                estimated_output_tokens=300,
+            )
             content = response.content.strip()
 
             # Clean markdown code blocks if present
@@ -425,16 +432,12 @@ class EffectivenessDetector:
 class LearningExtractor:
     """
     Extracts generalizable learnings from user feedback.
-    Uses Claude to analyze feedback and identify patterns.
+    Uses Haiku for fast pattern analysis.
     """
 
     def __init__(self):
-        self.llm = ChatAnthropic(
-            model=settings.claude_model,
-            max_tokens=2000,
-            api_key=settings.anthropic_api_key,
-            temperature=0.1,  # Low temperature for consistent extraction
-        )
+        # No LLM instance needed - using worker
+        pass
 
     async def extract_learnings(
         self,
@@ -474,7 +477,14 @@ class LearningExtractor:
         ]
 
         try:
-            response = await self.llm.ainvoke(messages)
+            # Use worker with Haiku for fast extraction
+            response = await submit_to_worker(
+                messages=messages,
+                model=settings.claude_model_fast,  # Haiku
+                max_tokens=1500,
+                temperature=0.1,
+                estimated_output_tokens=500,
+            )
             content = response.content.strip()
 
             # Clean markdown code blocks if present
