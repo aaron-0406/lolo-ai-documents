@@ -146,8 +146,19 @@ async def refine_document_stream(
                     full_response += chunk["content"]
 
                 elif chunk["type"] == "draft":
-                    # Document updated
+                    # Document updated - save to MySQL IMMEDIATELY for resilience
+                    # This ensures draft is persisted even if connection is lost later
                     new_draft = chunk["content"]
+                    try:
+                        await mysql.update_ai_session_draft(
+                            request_body.session_id,
+                            new_draft,
+                            0,  # tokens_used will be updated at the end
+                        )
+                        logger.debug(f"Draft saved to MySQL for session {request_body.session_id}")
+                    except Exception as save_err:
+                        logger.error(f"Failed to save draft to MySQL: {save_err}")
+
                     yield create_sse_message(SSE_EVENT_DRAFT_UPDATE, {
                         "draft": new_draft
                     })
@@ -176,13 +187,18 @@ async def refine_document_stream(
             # Send keepalive before potentially long operations
             yield create_sse_keepalive()
 
-            # Update session in MySQL with new draft
-            if new_draft:
-                await mysql.update_ai_session_draft(
-                    request_body.session_id,
-                    new_draft,
-                    tokens_used,
-                )
+            # Update tokens_used in MySQL (draft was already saved immediately when received)
+            # This is a final update to ensure tokens count is accurate
+            if new_draft and tokens_used > 0:
+                try:
+                    await mysql.update_ai_session_draft(
+                        request_body.session_id,
+                        new_draft,
+                        tokens_used,
+                    )
+                except Exception as update_err:
+                    # Non-critical - draft is already saved, just log the error
+                    logger.warning(f"Failed to update tokens_used: {update_err}")
 
             # Add AI response to session history
             await mysql.add_ai_session_message(
