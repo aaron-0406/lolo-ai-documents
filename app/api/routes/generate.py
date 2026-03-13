@@ -94,6 +94,26 @@ async def generate_document(
             session_id=session_id,  # Pass session_id for learning tracking
         )
 
+        # CRITICAL: Save draft to MySQL BEFORE returning response
+        # This ensures the draft is persisted even if the HTTP response times out
+        try:
+            await mysql.update_ai_session_draft(
+                session_id=session_id,
+                draft=result.draft,
+                tokens_used=result.tokens_used,
+            )
+            logger.info(f"Draft saved to MySQL session {session_id[:20]}...")
+
+            # Also save the AI message to conversation history
+            await mysql.add_ai_session_message(
+                session_id=session_id,
+                role="assistant",
+                content=result.ai_message,
+            )
+        except Exception as e:
+            logger.error(f"Failed to save draft/message to MySQL: {e}")
+            # Continue anyway - data will be in response for backend fallback
+
         # Log learning info and save to session for effectiveness tracking
         if result.learnings_applied > 0:
             logger.info(
