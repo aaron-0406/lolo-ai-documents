@@ -252,9 +252,17 @@ class LLMWorker:
                 try:
                     # Process the request
                     result = await self._process_request(request)
-                    request.future.set_result(result)
+                    # Check if future is still valid (not cancelled by timeout)
+                    if not request.future.done():
+                        request.future.set_result(result)
+                    else:
+                        logger.warning("[LLM Worker] Request future already done, discarding result")
                 except Exception as e:
-                    request.future.set_exception(e)
+                    # Check if future is still valid before setting exception
+                    if not request.future.done():
+                        request.future.set_exception(e)
+                    else:
+                        logger.warning(f"[LLM Worker] Request future already done, discarding exception: {e}")
                 finally:
                     self._queue.task_done()
 
@@ -262,7 +270,7 @@ class LLMWorker:
                 logger.info("[LLM Worker] Worker loop cancelled")
                 break
             except Exception as e:
-                logger.error(f"[LLM Worker] Unexpected error in worker loop: {e}")
+                logger.error(f"[LLM Worker] Unexpected error in worker loop: {e}", exc_info=True)
 
     def start(self):
         """Start the worker loop."""

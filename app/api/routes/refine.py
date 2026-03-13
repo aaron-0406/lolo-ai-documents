@@ -6,6 +6,7 @@ NOTE: Session management is handled by lolo-backend (MySQL).
 This microservice reads session data from MySQL and updates it after refinement.
 """
 
+import asyncio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from loguru import logger
@@ -15,6 +16,7 @@ from app.models.requests import RefineRequest
 from app.agents.orchestration.refiner_agent import RefinerAgent
 from app.utils.streaming import (
     create_sse_message,
+    create_sse_keepalive,
     SSE_EVENT_TOKEN,
     SSE_EVENT_DRAFT_UPDATE,
     SSE_EVENT_DONE,
@@ -171,6 +173,9 @@ async def refine_document_stream(
                         "code": "REFINE_ERROR",
                     })
 
+            # Send keepalive before potentially long operations
+            yield create_sse_keepalive()
+
             # Update session in MySQL with new draft
             if new_draft:
                 await mysql.update_ai_session_draft(
@@ -186,6 +191,9 @@ async def refine_document_stream(
                 content=full_response,
             )
 
+            # Send another keepalive after database operations
+            yield create_sse_keepalive()
+
             # Send completion event with tokens_used for frontend to sync
             done_data = {
                 "changes": changes_detected,
@@ -200,7 +208,7 @@ async def refine_document_stream(
             yield create_sse_message(SSE_EVENT_DONE, done_data)
 
         except Exception as e:
-            logger.error(f"Error refining document: {e}")
+            logger.error(f"Error refining document: {e}", exc_info=True)
             yield create_sse_message(SSE_EVENT_ERROR, {
                 "error": str(e),
                 "code": "INTERNAL_ERROR",

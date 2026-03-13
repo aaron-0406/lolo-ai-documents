@@ -347,7 +347,9 @@ class RefinerAgent:
                     }
 
             except Exception as e:
-                logger.error(f"Error extracting learnings in stream: {e}")
+                logger.error(f"Error extracting learnings in stream: {e}", exc_info=True)
+                # Don't fail the stream - learnings are optional
+                # Just log the error and continue
 
     def _build_messages(
         self,
