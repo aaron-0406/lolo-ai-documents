@@ -21,6 +21,15 @@ class AnalyzeRequest(BaseModel):
         None,
         description="Case context passed from backend"
     )
+    job_id: Optional[str] = Field(
+        None,
+        description="Job ID from backend for resilient processing. "
+        "If provided, result will be saved to backend before HTTP response."
+    )
+    include_files: Optional[bool] = Field(
+        True,
+        description="Whether to include file content in analysis"
+    )
 
 
 class GenerateRequest(BaseModel):
