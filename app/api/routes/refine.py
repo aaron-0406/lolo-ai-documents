@@ -1,6 +1,6 @@
 """
-Refine endpoint - Refines document via chat.
-Integrates with the learning system to extract learnings from user feedback.
+Refine endpoint - Conversational document refinement via chat.
+Supports both informational responses (questions about laws/case) and document edits.
 
 NOTE: Session management is handled by lolo-backend (MySQL).
 This microservice reads session data from MySQL and updates it after refinement.
@@ -16,6 +16,7 @@ from app.agents.orchestration.refiner_agent import RefinerAgent
 from app.services.learning_service import (
     learning_extractor,
     learning_backend,
+    learning_applier,
 )
 
 router = APIRouter()
@@ -34,6 +35,7 @@ async def extract_and_store_learnings_background(
     """
     Background task to extract and store learnings.
     This runs after the response is sent to avoid blocking.
+    Only called when there are actual document changes.
     """
     try:
         logger.info(f"[Background] Extracting learnings for session {session_id}")
@@ -81,24 +83,20 @@ async def refine_document_sync(
     background_tasks: BackgroundTasks,
 ):
     """
-    Synchronous refine endpoint - returns JSON response.
+    Conversational refine endpoint - handles questions AND document edits.
 
-    This is the recommended endpoint for the job system as it:
-    - Returns immediately when refinement is complete
-    - Saves draft to MySQL before responding
-    - Extracts learnings in background (non-blocking)
-    - Is more reliable than SSE streaming
-
-    Args:
-        case_file_id: ID of the JUDICIAL_CASE_FILE
-        request_body: Refinement parameters (session_id, feedback)
-        request: FastAPI request object
-        background_tasks: FastAPI background tasks
+    The agent intelligently determines whether to:
+    - Answer a question (informational) - no document changes
+    - Modify the document (edit) - updates the draft
 
     Returns:
-        JSON with success, draft, changes, and message
+        JSON with:
+        - response_type: "informational" or "edit"
+        - explanation: The agent's response (always present)
+        - draft: Updated document (only for "edit" responses)
+        - has_document_changes: Boolean indicating if document was modified
     """
-    logger.info(f"[Sync] Refining document for case {case_file_id}, session {request_body.session_id}")
+    logger.info(f"[Sync] Processing chat for case {case_file_id}, session {request_body.session_id}")
 
     try:
         # Get MySQL service
@@ -136,30 +134,54 @@ async def refine_document_sync(
             content=request_body.feedback,
         )
 
-        # Run refiner agent (non-streaming version)
+        # Get learnings for this customer/document type (optional)
+        learning_instructions = None
+        if settings.learning_enabled and customer_id:
+            try:
+                learnings = await learning_applier.get_learnings_for_generation(
+                    customer_id=customer_id,
+                    document_type=document_type,
+                )
+                if learnings:
+                    learnings = learning_applier.filter_by_context(learnings, case_context)
+                    if learnings:
+                        learning_instructions = learning_applier.format_learnings_for_prompt(
+                            learnings=learnings,
+                            customer_name=case_context.get("customer_name", ""),
+                        )
+                        logger.info(f"[Sync] Applied {len(learnings)} learnings to refine")
+            except Exception as e:
+                logger.warning(f"[Sync] Could not fetch learnings: {e}")
+
+        # Run refiner agent
         refiner = RefinerAgent()
 
-        logger.info(f"[Sync] Running refiner for session {request_body.session_id}")
+        logger.info(f"[Sync] Running conversational refiner for session {request_body.session_id}")
 
         result = await refiner.refine(
             current_draft=current_draft,
             feedback=request_body.feedback,
             context=case_context,
             chat_history=chat_history,
+            custom_instructions=learning_instructions,
         )
 
-        new_draft = result.get("new_draft", "")
+        response_type = result.get("response_type", "edit")
+        new_draft = result.get("new_draft")
         changes = result.get("changes", [])
         explanation = result.get("explanation", "")
+        has_document_changes = result.get("has_document_changes", False)
 
-        logger.info(f"[Sync] Refinement complete, saving draft to MySQL")
+        logger.info(f"[Sync] Response type: {response_type}, has_changes: {has_document_changes}")
 
-        # Save draft to MySQL IMMEDIATELY
-        await mysql.update_ai_session_draft(
-            request_body.session_id,
-            new_draft,
-            0,  # tokens_used - not tracked in sync mode
-        )
+        # Only save draft to MySQL if there were actual changes
+        if has_document_changes and new_draft:
+            await mysql.update_ai_session_draft(
+                request_body.session_id,
+                new_draft,
+                0,  # tokens_used - not tracked in sync mode
+            )
+            logger.info(f"[Sync] Draft saved for session {request_body.session_id}")
 
         # Add AI response to session history
         await mysql.add_ai_session_message(
@@ -168,10 +190,8 @@ async def refine_document_sync(
             content=explanation,
         )
 
-        logger.info(f"[Sync] Draft saved for session {request_body.session_id}")
-
-        # Schedule learning extraction in background (fire-and-forget)
-        if settings.learning_enabled and customer_id and new_draft:
+        # Schedule learning extraction in background only for actual edits
+        if settings.learning_enabled and customer_id and has_document_changes and new_draft:
             background_tasks.add_task(
                 extract_and_store_learnings_background,
                 customer_id=customer_id,
@@ -187,16 +207,18 @@ async def refine_document_sync(
 
         return {
             "success": True,
-            "draft": new_draft,
+            "response_type": response_type,
+            "draft": new_draft if has_document_changes else current_draft,
             "changes": changes,
-            "message": "Document refined successfully",
+            "message": "Document refined successfully" if has_document_changes else "Response provided",
             "explanation": explanation,
+            "has_document_changes": has_document_changes,
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[Sync] Error refining document: {e}", exc_info=True)
+        logger.error(f"[Sync] Error processing chat: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={"error": str(e), "code": "INTERNAL_ERROR"}
