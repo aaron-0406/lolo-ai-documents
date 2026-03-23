@@ -68,14 +68,14 @@ Respuesta (solo números o NINGUNA):"""
 
         try:
             # Use worker with Haiku for fast analysis
-            response = await submit_to_worker(
+            llm_response = await submit_to_worker(
                 messages=[HumanMessage(content=analysis_prompt)],
                 model=settings.claude_model_fast,  # Haiku
                 max_tokens=500,
                 estimated_output_tokens=100,
             )
 
-            result = response.content.strip().upper()
+            result = llm_response.message.content.strip().upper()
 
             if "NINGUNA" in result or not result:
                 return []

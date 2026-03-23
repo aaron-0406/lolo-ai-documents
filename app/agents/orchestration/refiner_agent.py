@@ -9,10 +9,27 @@ from typing import Any, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from loguru import logger
+from pydantic import BaseModel
 
 from app.config import settings
 from app.prompts.refiner import REFINER_SYSTEM_PROMPT
 from app.utils.llm_worker import submit_to_worker
+from app.services.token_reporter import (
+    init_token_usage_async,
+    accumulate_tokens_async,
+    mark_operation_completed_async,
+)
+
+
+class RefineTokenTrackingContext(BaseModel):
+    """Context for immediate token tracking in refine operations."""
+    session_id: str
+    job_id: Optional[str] = None
+    judicial_case_file_id: int
+    document_type: str
+    customer_id: int
+    customer_has_bank_id: int
+    created_by_customer_user_id: int
 
 
 class RefinerAgent:
@@ -32,6 +49,7 @@ class RefinerAgent:
         context: dict[str, Any],
         chat_history: list[dict[str, Any]],
         custom_instructions: Optional[str] = None,
+        token_tracking: Optional[RefineTokenTrackingContext] = None,
     ) -> dict[str, Any]:
         """
         Process user feedback - either answer questions or modify document.
@@ -42,22 +60,72 @@ class RefinerAgent:
             context: Case file context
             chat_history: Previous chat messages
             custom_instructions: Optional learning rules to apply
+            token_tracking: Optional context for immediate token tracking
 
         Returns:
             Dictionary with response_type, new_draft (if edit), and explanation
         """
-        messages = self._build_messages(
-            current_draft, feedback, context, chat_history, custom_instructions
-        )
+        # Initialize token tracking record if context provided
+        token_record_id: Optional[int] = None
+        if token_tracking:
+            token_record_id = await init_token_usage_async(
+                session_id=token_tracking.session_id,
+                judicial_case_file_id=token_tracking.judicial_case_file_id,
+                document_type=token_tracking.document_type,
+                operation_type="REFINE",
+                model_used=settings.claude_model,
+                customer_id=token_tracking.customer_id,
+                customer_has_bank_id=token_tracking.customer_has_bank_id,
+                created_by_customer_user_id=token_tracking.created_by_customer_user_id,
+                job_id=token_tracking.job_id,
+            )
+            if token_record_id:
+                logger.info(f"[TokenTracking] Initialized record {token_record_id} for REFINE")
 
-        # Use worker with Sonnet for high-quality responses
-        response = await submit_to_worker(
-            messages=messages,
-            model=settings.claude_model,  # Sonnet
-            max_tokens=8000,
-            estimated_output_tokens=4000,
-        )
-        return self._parse_response(response.content)
+        try:
+            messages = self._build_messages(
+                current_draft, feedback, context, chat_history, custom_instructions
+            )
+
+            # Use worker with Sonnet for high-quality responses
+            llm_response = await submit_to_worker(
+                messages=messages,
+                model=settings.claude_model,  # Sonnet
+                max_tokens=8000,
+                estimated_output_tokens=4000,
+            )
+
+            input_tokens = llm_response.token_usage.input_tokens
+            output_tokens = llm_response.token_usage.output_tokens
+
+            # IMMEDIATE TOKEN TRACKING: Accumulate after Claude call
+            if token_record_id and (input_tokens > 0 or output_tokens > 0):
+                await accumulate_tokens_async(token_record_id, input_tokens, output_tokens)
+
+            # Parse the response and include token usage
+            result = self._parse_response(llm_response.message.content)
+
+            # Add token usage to result
+            result["token_usage"] = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "model": llm_response.token_usage.model,
+            }
+            result["token_record_id"] = token_record_id
+
+            # Mark operation as completed successfully
+            if token_record_id:
+                await mark_operation_completed_async(token_record_id, success=True)
+                logger.info(f"[TokenTracking] Marked record {token_record_id} as completed")
+
+            return result
+
+        except Exception as e:
+            # Mark operation as failed if we have a token record
+            if token_record_id:
+                await mark_operation_completed_async(token_record_id, success=False)
+                logger.info(f"[TokenTracking] Marked record {token_record_id} as failed")
+            raise
 
     def _build_messages(
         self,

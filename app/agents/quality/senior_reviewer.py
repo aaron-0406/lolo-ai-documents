@@ -24,6 +24,7 @@ class ValidationResult(BaseModel):
     improvements_made: list[str]
     improved_draft: str | None = None
     score: int | None = None
+    token_usage: dict | None = None  # {input_tokens, output_tokens, model}
 
 
 class SeniorReviewerAgent:
@@ -96,13 +97,20 @@ RESPETA las preferencias del cliente.
 
         try:
             # Use worker with Haiku for fast validation
-            response = await submit_to_worker(
+            llm_response = await submit_to_worker(
                 messages=messages,
                 model=settings.claude_model_fast,  # Haiku
                 max_tokens=2000,
                 estimated_output_tokens=600,
             )
-            return self._parse_result(response.content, draft)
+            result = self._parse_result(llm_response.message.content, draft)
+            # Add token usage to result
+            result.token_usage = {
+                "input_tokens": llm_response.token_usage.input_tokens,
+                "output_tokens": llm_response.token_usage.output_tokens,
+                "model": llm_response.token_usage.model,
+            }
+            return result
         except Exception as e:
             logger.error(f"Senior review failed: {e}")
             return ValidationResult(

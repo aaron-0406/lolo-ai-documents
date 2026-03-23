@@ -12,11 +12,12 @@ from loguru import logger
 
 from app.config import settings
 from app.models.requests import RefineRequest
-from app.agents.orchestration.refiner_agent import RefinerAgent
+from app.agents.orchestration.refiner_agent import RefinerAgent, RefineTokenTrackingContext
 from app.services.learning_service import (
     learning_extractor,
     learning_backend,
     learning_applier,
+    LearningTokenTrackingContext,
 )
 
 router = APIRouter()
@@ -31,6 +32,7 @@ async def extract_and_store_learnings_background(
     session_id: str,
     case_file_id: int,
     user_id: int | None,
+    customer_has_bank_id: int = 0,
 ):
     """
     Background task to extract and store learnings.
@@ -40,12 +42,25 @@ async def extract_and_store_learnings_background(
     try:
         logger.info(f"[Background] Extracting learnings for session {session_id}")
 
+        # Build token tracking context for learning extraction
+        token_tracking = None
+        if customer_id and customer_has_bank_id:
+            token_tracking = LearningTokenTrackingContext(
+                session_id=session_id,
+                judicial_case_file_id=case_file_id,
+                document_type=document_type,
+                customer_id=customer_id,
+                customer_has_bank_id=customer_has_bank_id,
+                created_by_customer_user_id=user_id or 0,
+            )
+
         learnings = await learning_extractor.extract_learnings(
             document_type=document_type,
             user_feedback=feedback,
             original_text=original_draft,
             corrected_text=new_draft,
             document_section=None,
+            token_tracking=token_tracking,
         )
 
         if not learnings:
@@ -153,7 +168,20 @@ async def refine_document_sync(
             except Exception as e:
                 logger.warning(f"[Sync] Could not fetch learnings: {e}")
 
-        # Run refiner agent
+        # Build token tracking context for immediate registration
+        token_tracking = None
+        if customer_id:
+            customer_has_bank_id = case_context.get("customer_has_bank_id", 0)
+            token_tracking = RefineTokenTrackingContext(
+                session_id=request_body.session_id,
+                judicial_case_file_id=case_file_id,
+                document_type=document_type,
+                customer_id=customer_id,
+                customer_has_bank_id=customer_has_bank_id,
+                created_by_customer_user_id=user_id or 0,
+            )
+
+        # Run refiner agent with immediate token tracking
         refiner = RefinerAgent()
 
         logger.info(f"[Sync] Running conversational refiner for session {request_body.session_id}")
@@ -164,6 +192,7 @@ async def refine_document_sync(
             context=case_context,
             chat_history=chat_history,
             custom_instructions=learning_instructions,
+            token_tracking=token_tracking,
         )
 
         response_type = result.get("response_type", "edit")
@@ -171,17 +200,27 @@ async def refine_document_sync(
         changes = result.get("changes", [])
         explanation = result.get("explanation", "")
         has_document_changes = result.get("has_document_changes", False)
+        token_usage = result.get("token_usage", {})
 
         logger.info(f"[Sync] Response type: {response_type}, has_changes: {has_document_changes}")
 
+        # NOTE: Token usage is now tracked immediately during refine
+        # via the RefineTokenTrackingContext passed to RefinerAgent
+        if token_usage:
+            logger.info(
+                f"[Sync] Token usage (immediate tracking): "
+                f"{token_usage.get('input_tokens', 0)}+{token_usage.get('output_tokens', 0)} tokens"
+            )
+
         # Only save draft to MySQL if there were actual changes
         if has_document_changes and new_draft:
+            total_tokens = token_usage.get("input_tokens", 0) + token_usage.get("output_tokens", 0)
             await mysql.update_ai_session_draft(
                 request_body.session_id,
                 new_draft,
-                0,  # tokens_used - not tracked in sync mode
+                total_tokens,
             )
-            logger.info(f"[Sync] Draft saved for session {request_body.session_id}")
+            logger.info(f"[Sync] Draft saved for session {request_body.session_id} with {total_tokens} tokens")
 
         # Add AI response to session history
         await mysql.add_ai_session_message(
@@ -192,6 +231,7 @@ async def refine_document_sync(
 
         # Schedule learning extraction in background only for actual edits
         if settings.learning_enabled and customer_id and has_document_changes and new_draft:
+            customer_has_bank_id = case_context.get("customer_has_bank_id", 0)
             background_tasks.add_task(
                 extract_and_store_learnings_background,
                 customer_id=customer_id,
@@ -202,6 +242,7 @@ async def refine_document_sync(
                 session_id=request_body.session_id,
                 case_file_id=case_file_id,
                 user_id=user_id,
+                customer_has_bank_id=customer_has_bank_id,
             )
             logger.info(f"[Sync] Learning extraction scheduled in background")
 

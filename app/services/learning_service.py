@@ -17,6 +17,21 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.utils.llm_worker import submit_to_worker
+from app.services.token_reporter import (
+    init_token_usage_async,
+    accumulate_tokens_async,
+    mark_operation_completed_async,
+)
+
+
+class LearningTokenTrackingContext(BaseModel):
+    """Context for immediate token tracking in learning operations."""
+    session_id: str
+    judicial_case_file_id: int
+    document_type: str
+    customer_id: int
+    customer_has_bank_id: int
+    created_by_customer_user_id: int
 
 
 # =============================================================================
@@ -286,14 +301,14 @@ class SimilarityChecker:
 
         try:
             # Use worker with Haiku for fast analysis
-            response = await submit_to_worker(
+            llm_response = await submit_to_worker(
                 messages=messages,
                 model=settings.claude_model_fast,  # Haiku
                 max_tokens=1000,
                 temperature=0.1,
                 estimated_output_tokens=300,
             )
-            content = response.content.strip()
+            content = llm_response.message.content.strip()
 
             # Clean markdown code blocks if present
             if content.startswith("```"):
@@ -400,14 +415,14 @@ class EffectivenessDetector:
 
         try:
             # Use worker with Haiku for fast analysis
-            response = await submit_to_worker(
+            llm_response = await submit_to_worker(
                 messages=messages,
                 model=settings.claude_model_fast,  # Haiku
                 max_tokens=1000,
                 temperature=0.1,
                 estimated_output_tokens=300,
             )
-            content = response.content.strip()
+            content = llm_response.message.content.strip()
 
             # Clean markdown code blocks if present
             if content.startswith("```"):
@@ -446,6 +461,7 @@ class LearningExtractor:
         original_text: str,
         corrected_text: str,
         document_section: Optional[str] = None,
+        token_tracking: Optional[LearningTokenTrackingContext] = None,
     ) -> list[ExtractedLearning]:
         """
         Extract learnings from user feedback.
@@ -456,12 +472,29 @@ class LearningExtractor:
             original_text: Original document section
             corrected_text: Corrected document section
             document_section: Which section was modified
+            token_tracking: Optional context for immediate token tracking
 
         Returns:
             List of extracted learnings
         """
         if not settings.learning_enabled:
             return []
+
+        # Initialize token tracking record if context provided
+        token_record_id: Optional[int] = None
+        if token_tracking:
+            token_record_id = await init_token_usage_async(
+                session_id=token_tracking.session_id,
+                judicial_case_file_id=token_tracking.judicial_case_file_id,
+                document_type=token_tracking.document_type,
+                operation_type="LEARNING",
+                model_used=settings.claude_model_fast,
+                customer_id=token_tracking.customer_id,
+                customer_has_bank_id=token_tracking.customer_has_bank_id,
+                created_by_customer_user_id=token_tracking.created_by_customer_user_id,
+            )
+            if token_record_id:
+                logger.info(f"[TokenTracking] Initialized record {token_record_id} for LEARNING extraction")
 
         prompt = LEARNING_EXTRACTOR_PROMPT.format(
             document_type=document_type,
@@ -478,14 +511,22 @@ class LearningExtractor:
 
         try:
             # Use worker with Haiku for fast extraction
-            response = await submit_to_worker(
+            llm_response = await submit_to_worker(
                 messages=messages,
                 model=settings.claude_model_fast,  # Haiku
                 max_tokens=1500,
                 temperature=0.1,
                 estimated_output_tokens=500,
             )
-            content = response.content.strip()
+
+            input_tokens = llm_response.token_usage.input_tokens
+            output_tokens = llm_response.token_usage.output_tokens
+
+            # IMMEDIATE TOKEN TRACKING: Accumulate after Claude call
+            if token_record_id and (input_tokens > 0 or output_tokens > 0):
+                await accumulate_tokens_async(token_record_id, input_tokens, output_tokens)
+
+            content = llm_response.message.content.strip()
 
             # Clean markdown code blocks if present
             if content.startswith("```"):
@@ -512,13 +553,22 @@ class LearningExtractor:
                 )
                 learnings.append(learning)
 
+            # Mark operation as completed successfully
+            if token_record_id:
+                await mark_operation_completed_async(token_record_id, success=True)
+                logger.info(f"[TokenTracking] Marked LEARNING record {token_record_id} as completed")
+
             logger.info(f"Extracted {len(learnings)} learnings from feedback")
             return learnings
 
         except json.JSONDecodeError as e:
+            if token_record_id:
+                await mark_operation_completed_async(token_record_id, success=False)
             logger.error(f"Failed to parse learning extraction response: {e}")
             return []
         except Exception as e:
+            if token_record_id:
+                await mark_operation_completed_async(token_record_id, success=False)
             logger.error(f"Error extracting learnings: {e}")
             return []
 

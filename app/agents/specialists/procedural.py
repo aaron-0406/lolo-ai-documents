@@ -32,8 +32,12 @@ class ProceduralAgent:
         document_type: str,
         context: CaseContext,
         custom_instructions: str | None = None,
-    ) -> str:
-        """Generate a document draft for procedural matters."""
+    ) -> dict:
+        """Generate a document draft for procedural matters.
+
+        Returns:
+            dict with 'draft' (str) and 'token_usage' (dict with input_tokens, output_tokens, model)
+        """
         logger.info(f"ProceduralAgent generating: {document_type}")
         if custom_instructions:
             logger.info(f"[LEARNINGS] Custom instructions received ({len(custom_instructions)} chars):\n{custom_instructions[:800]}")
@@ -61,13 +65,20 @@ class ProceduralAgent:
         ]
 
         # Use worker with Sonnet for high-quality generation
-        response = await submit_to_worker(
+        llm_response = await submit_to_worker(
             messages=messages,
             model=settings.claude_model,  # Sonnet
             max_tokens=8000,
             estimated_output_tokens=4000,
         )
-        return response.content
+        return {
+            "draft": llm_response.message.content,
+            "token_usage": {
+                "input_tokens": llm_response.token_usage.input_tokens,
+                "output_tokens": llm_response.token_usage.output_tokens,
+                "model": llm_response.token_usage.model,
+            }
+        }
 
     def _build_prompt(
         self,

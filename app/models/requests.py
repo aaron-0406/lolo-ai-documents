@@ -30,6 +30,10 @@ class AnalyzeRequest(BaseModel):
         True,
         description="Whether to include file content in analysis"
     )
+    created_by_user_id: Optional[int] = Field(
+        None,
+        description="Customer user ID who initiated the analysis (for token tracking)"
+    )
 
 
 class GenerateRequest(BaseModel):

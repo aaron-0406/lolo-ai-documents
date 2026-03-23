@@ -12,6 +12,11 @@ from pydantic import BaseModel
 from app.config import settings
 from app.models.schemas import CaseContext
 from app.services.learning_service import learning_applier, StoredLearning
+from app.services.token_reporter import (
+    init_token_usage_async,
+    accumulate_tokens_async,
+    mark_operation_completed_async,
+)
 
 # Import specialist agents
 from app.agents.specialists.obligations import ObligationsAgent
@@ -30,6 +35,18 @@ from app.agents.quality.legal_validator import LegalValidatorAgent
 from app.agents.quality.senior_reviewer import SeniorReviewerAgent
 
 
+class TokenTrackingContext(BaseModel):
+    """Context for immediate token tracking."""
+    session_id: str
+    job_id: Optional[str] = None
+    judicial_case_file_id: int
+    document_type: str
+    document_name: Optional[str] = None
+    customer_id: int
+    customer_has_bank_id: int
+    created_by_customer_user_id: int
+
+
 class GenerationResult(BaseModel):
     """Result of document generation."""
 
@@ -41,6 +58,14 @@ class GenerationResult(BaseModel):
     generated_at: str
     learnings_applied: int = 0
     learning_ids: list[str] = []
+    # Detailed token usage breakdown
+    token_usage: dict[str, Any] = {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "breakdown": [],  # List of {agent, input_tokens, output_tokens, model}
+    }
+    # Token tracking record ID (for external reference)
+    token_record_id: Optional[int] = None
 
 
 class GeneratorAgent:
@@ -126,6 +151,7 @@ class GeneratorAgent:
         context: CaseContext,
         custom_instructions: str | None = None,
         session_id: str | None = None,
+        token_tracking: Optional[TokenTrackingContext] = None,
     ) -> GenerationResult:
         """
         Generate a document using the full pipeline:
@@ -138,11 +164,32 @@ class GeneratorAgent:
             context: Case file context
             custom_instructions: Optional custom instructions from user
             session_id: Optional session ID for tracking applications
+            token_tracking: Optional context for immediate token tracking
 
         Returns:
             GenerationResult with draft and metadata
         """
         logger.info(f"Generating document: {document_type}")
+
+        # Initialize token tracking record if context provided
+        token_record_id: Optional[int] = None
+        if token_tracking:
+            token_record_id = await init_token_usage_async(
+                session_id=token_tracking.session_id,
+                judicial_case_file_id=token_tracking.judicial_case_file_id,
+                document_type=token_tracking.document_type,
+                operation_type="GENERATE",
+                model_used=settings.claude_model,
+                customer_id=token_tracking.customer_id,
+                customer_has_bank_id=token_tracking.customer_has_bank_id,
+                created_by_customer_user_id=token_tracking.created_by_customer_user_id,
+                job_id=token_tracking.job_id,
+                document_name=token_tracking.document_name,
+            )
+            if token_record_id:
+                logger.info(f"[TokenTracking] Initialized record {token_record_id} for GENERATE")
+            else:
+                logger.warning("[TokenTracking] Failed to initialize record, continuing without tracking")
 
         agents_used = []
         validation_results = []
@@ -212,15 +259,42 @@ class GeneratorAgent:
 
         logger.info(f"Using specialist: {specialist_key}")
 
+        # Track detailed token usage
+        token_breakdown = []
+        total_input_tokens = 0
+        total_output_tokens = 0
+
         try:
-            draft = await specialist.generate_draft(
+            result = await specialist.generate_draft(
                 document_type=document_type,
                 context=context,
                 custom_instructions=combined_instructions,
             )
-            total_tokens += 4000  # Estimate
+            # Extract draft and token usage from specialist result
+            draft = result["draft"]
+            specialist_tokens = result.get("token_usage", {})
+            input_tokens = specialist_tokens.get("input_tokens", 0)
+            output_tokens = specialist_tokens.get("output_tokens", 0)
+            total_input_tokens += input_tokens
+            total_output_tokens += output_tokens
+            total_tokens = input_tokens + output_tokens
+            token_breakdown.append({
+                "agent": f"Specialist:{specialist_key}",
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "model": specialist_tokens.get("model", "unknown"),
+            })
+            logger.info(f"Specialist tokens: {input_tokens} input, {output_tokens} output")
+
+            # IMMEDIATE TOKEN TRACKING: Accumulate after specialist call
+            if token_record_id and (input_tokens > 0 or output_tokens > 0):
+                await accumulate_tokens_async(token_record_id, input_tokens, output_tokens)
+
         except Exception as e:
             logger.error(f"Specialist failed: {e}")
+            # Mark operation as failed if we have a token record
+            if token_record_id:
+                await mark_operation_completed_async(token_record_id, success=False)
             raise
 
         # Step 2: Run quality pipeline
@@ -253,7 +327,25 @@ class GeneratorAgent:
                     current_draft = result.improved_draft
 
                 agents_used.append(f"Quality:{validator_name}")
-                total_tokens += 2000  # Estimate per validator
+
+                # Track validator token usage if available
+                if hasattr(result, 'token_usage') and result.token_usage:
+                    validator_input = result.token_usage.get("input_tokens", 0)
+                    validator_output = result.token_usage.get("output_tokens", 0)
+                    total_input_tokens += validator_input
+                    total_output_tokens += validator_output
+                    total_tokens += validator_input + validator_output
+                    token_breakdown.append({
+                        "agent": f"Validator:{validator_name}",
+                        "input_tokens": validator_input,
+                        "output_tokens": validator_output,
+                        "model": result.token_usage.get("model", "unknown"),
+                    })
+                    logger.info(f"Validator {validator_name} tokens: {validator_input} input, {validator_output} output")
+
+                    # IMMEDIATE TOKEN TRACKING: Accumulate after validator call
+                    if token_record_id and (validator_input > 0 or validator_output > 0):
+                        await accumulate_tokens_async(token_record_id, validator_input, validator_output)
 
             except Exception as e:
                 logger.warning(f"Validator {validator_name} failed: {e}")
@@ -264,6 +356,7 @@ class GeneratorAgent:
                     "improvements_made": [],
                     "error": True,
                 })
+                # Note: We don't mark as failed here - validators are non-critical
 
         # Validate final draft - if it looks corrupted, use original
         if (len(current_draft) < 500
@@ -280,6 +373,11 @@ class GeneratorAgent:
             learnings_applied,
         )
 
+        # Mark operation as completed successfully
+        if token_record_id:
+            await mark_operation_completed_async(token_record_id, success=True)
+            logger.info(f"[TokenTracking] Marked record {token_record_id} as completed")
+
         return GenerationResult(
             draft=current_draft,
             ai_message=ai_message,
@@ -289,6 +387,12 @@ class GeneratorAgent:
             generated_at=datetime.now().isoformat(),
             learnings_applied=learnings_applied,
             learning_ids=learning_ids,
+            token_usage={
+                "total_input_tokens": total_input_tokens,
+                "total_output_tokens": total_output_tokens,
+                "breakdown": token_breakdown,
+            },
+            token_record_id=token_record_id,
         )
 
     def _combine_instructions(

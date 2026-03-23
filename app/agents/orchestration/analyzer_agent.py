@@ -13,7 +13,22 @@ from pydantic import BaseModel
 from app.config import settings
 from app.models.schemas import CaseContext, DocumentSuggestion, NoActionReason
 from app.prompts.analyzer import ANALYZER_SYSTEM_PROMPT
-from app.utils.llm_worker import submit_to_worker
+from app.utils.llm_worker import submit_to_worker, TokenUsage
+from app.services.token_reporter import (
+    init_token_usage_async,
+    accumulate_tokens_async,
+    mark_operation_completed_async,
+)
+
+
+class AnalyzeTokenTrackingContext(BaseModel):
+    """Context for immediate token tracking in analyze operations."""
+    session_id: str  # Can be job_id or a generated ID
+    job_id: Optional[str] = None
+    judicial_case_file_id: int
+    customer_id: int
+    customer_has_bank_id: int
+    created_by_customer_user_id: int
 
 
 class AnalysisResult(BaseModel):
@@ -23,6 +38,12 @@ class AnalysisResult(BaseModel):
     suggestion: Optional[DocumentSuggestion] = None
     alternatives: list[DocumentSuggestion] = []
     no_action_reason: Optional[NoActionReason] = None
+    # Token usage from the LLM call
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model_used: str = ""
+    # Token tracking record ID (for external reference)
+    token_record_id: Optional[int] = None
 
 
 class AnalyzerAgent:
@@ -36,17 +57,39 @@ class AnalyzerAgent:
         # No LLM instance needed - using worker
         pass
 
-    async def analyze(self, context: CaseContext) -> AnalysisResult:
+    async def analyze(
+        self,
+        context: CaseContext,
+        token_tracking: Optional[AnalyzeTokenTrackingContext] = None,
+    ) -> AnalysisResult:
         """
         Analyze the case file and return document suggestions.
 
         Args:
             context: Full context of the judicial case file
+            token_tracking: Optional context for immediate token tracking
 
         Returns:
             AnalysisResult with suggestion and alternatives
         """
         logger.info(f"Analyzing case file: {context.case_number}")
+
+        # Initialize token tracking record if context provided
+        token_record_id: Optional[int] = None
+        if token_tracking:
+            token_record_id = await init_token_usage_async(
+                session_id=token_tracking.session_id,
+                judicial_case_file_id=token_tracking.judicial_case_file_id,
+                document_type="analyze",  # Will be updated when we know the suggestion
+                operation_type="ANALYZE",
+                model_used=settings.claude_model_fast,
+                customer_id=token_tracking.customer_id,
+                customer_has_bank_id=token_tracking.customer_has_bank_id,
+                created_by_customer_user_id=token_tracking.created_by_customer_user_id,
+                job_id=token_tracking.job_id,
+            )
+            if token_record_id:
+                logger.info(f"[TokenTracking] Initialized record {token_record_id} for ANALYZE")
 
         # Calculate days of inactivity
         days_inactive = self._calculate_inactivity(context.binnacles)
@@ -64,14 +107,43 @@ class AnalyzerAgent:
 
         try:
             # Use worker with Haiku for fast analysis
-            response = await submit_to_worker(
+            llm_response = await submit_to_worker(
                 messages=messages,
                 model=settings.claude_model_fast,  # Haiku
                 max_tokens=2000,
                 estimated_output_tokens=500,
             )
-            return self._parse_response(response.content)
+
+            input_tokens = llm_response.token_usage.input_tokens
+            output_tokens = llm_response.token_usage.output_tokens
+
+            # IMMEDIATE TOKEN TRACKING: Accumulate after Claude call
+            if token_record_id and (input_tokens > 0 or output_tokens > 0):
+                await accumulate_tokens_async(token_record_id, input_tokens, output_tokens)
+
+            result = self._parse_response(llm_response.message.content)
+            # Add token usage from the response
+            result.input_tokens = input_tokens
+            result.output_tokens = output_tokens
+            result.model_used = llm_response.token_usage.model
+            result.token_record_id = token_record_id
+
+            # Mark operation as completed successfully
+            if token_record_id:
+                await mark_operation_completed_async(token_record_id, success=True)
+                logger.info(f"[TokenTracking] Marked record {token_record_id} as completed")
+
+            logger.info(
+                f"Analysis complete. Tokens used: {result.input_tokens} input, "
+                f"{result.output_tokens} output ({result.model_used})"
+            )
+            return result
+
         except Exception as e:
+            # Mark operation as failed if we have a token record
+            if token_record_id:
+                await mark_operation_completed_async(token_record_id, success=False)
+                logger.info(f"[TokenTracking] Marked record {token_record_id} as failed")
             logger.error(f"Error analyzing case file: {e}")
             raise
 

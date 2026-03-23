@@ -310,6 +310,53 @@ black app/
 
 ---
 
+---
+
+## Sistema de Tracking de Tokens
+
+### Captura de Tokens Reales
+
+El sistema captura tokens reales desde la respuesta de Claude API:
+
+```python
+# app/utils/llm_worker.py (líneas ~214-224)
+response = await anthropic_client.messages.create(...)
+
+# Captura tokens reales del response
+usage = response.usage
+input_tokens = usage.input_tokens    # Tokens reales de entrada
+output_tokens = usage.output_tokens  # Tokens reales de salida
+```
+
+### Persistencia de Tokens
+
+Los tokens se persisten en `JUDICIAL_AI_TOKEN_USAGE` con cada operación:
+
+```python
+# Estructura de datos enviada
+token_usage = {
+    "session_id": session_id,
+    "job_id": job_id,
+    "operation_type": "GENERATE",  # ANALYZE, GENERATE, REFINE, FINALIZE
+    "model_used": "claude-sonnet-4-6",
+    "input_tokens": usage.input_tokens,
+    "output_tokens": usage.output_tokens,
+    "customer_id": customer_id,
+    "customer_has_bank_id": chb_id
+}
+```
+
+### Puntos de Captura
+
+| Archivo | Línea | Operación |
+|---------|-------|-----------|
+| `agents/orchestration/analyzer_agent.py` | ~150 | ANALYZE |
+| `agents/orchestration/generator_agent.py` | ~221, ~256 | GENERATE |
+| `agents/orchestration/refiner_agent.py` | ~180 | REFINE |
+| `workflows/generation_workflow.py` | ~320 | FINALIZE |
+
+---
+
 ## Notas para IA
 
 1. **Contexto del caso es crítico:** Siempre leer JUDICIAL_CASE_FILE y JUDICIAL_BINNACLE antes de generar
@@ -320,3 +367,4 @@ black app/
 6. **Async everywhere:** Todo el código es async/await, usar aiomysql y aioboto3
 7. **Validación en 3 niveles:** Cada documento pasa por structure, data y legal validators
 8. **DOCX final:** python-docx genera el documento final con formato profesional
+9. **Tokens reales, no estimados:** Siempre usar `response.usage.input_tokens` y `response.usage.output_tokens` de la API, nunca hardcoded

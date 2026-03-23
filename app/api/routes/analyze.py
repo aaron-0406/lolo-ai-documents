@@ -13,7 +13,7 @@ import httpx
 from app.config import settings
 from app.models.requests import AnalyzeRequest
 from app.models.responses import AnalyzeResponse
-from app.agents.orchestration.analyzer_agent import AnalyzerAgent
+from app.agents.orchestration.analyzer_agent import AnalyzerAgent, AnalyzeTokenTrackingContext
 from app.utils.exceptions import CaseFileNotFoundError
 
 router = APIRouter()
@@ -108,9 +108,28 @@ async def analyze_case_file(
             f"{len(context.binnacle_documents)} documents extracted"
         )
 
-        # Run analyzer agent
+        # Build token tracking context for immediate registration
+        token_tracking = None
+        if context.customer_id and context.customer_has_bank_id and request_body.created_by_user_id:
+            token_tracking = AnalyzeTokenTrackingContext(
+                session_id=request_body.job_id or f"analyze-{case_file_id}",
+                job_id=request_body.job_id,
+                judicial_case_file_id=case_file_id,
+                customer_id=context.customer_id,
+                customer_has_bank_id=context.customer_has_bank_id,
+                created_by_customer_user_id=request_body.created_by_user_id,
+            )
+
+        # Run analyzer agent with immediate token tracking
         analyzer = AnalyzerAgent()
-        result = await analyzer.analyze(context)
+        result = await analyzer.analyze(context, token_tracking=token_tracking)
+
+        # NOTE: Token usage is now tracked immediately during analysis
+        # via the AnalyzeTokenTrackingContext passed to AnalyzerAgent
+        if result.input_tokens > 0:
+            logger.info(
+                f"[TokenTracking] Immediate tracking: {result.input_tokens}+{result.output_tokens} tokens"
+            )
 
         # Build response
         if result.has_suggestion:

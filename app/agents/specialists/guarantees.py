@@ -32,8 +32,12 @@ class GuaranteesAgent:
         document_type: str,
         context: CaseContext,
         custom_instructions: str | None = None,
-    ) -> str:
-        """Generate a document draft for guarantee matters."""
+    ) -> dict:
+        """Generate a document draft for guarantee matters.
+
+        Returns:
+            dict with 'draft' (str) and 'token_usage' (dict with input_tokens, output_tokens, model)
+        """
         logger.info(f"GuaranteesAgent generating: {document_type}")
 
         # Verify collaterals exist for guarantee execution
@@ -52,13 +56,20 @@ class GuaranteesAgent:
         ]
 
         # Use worker with Sonnet for high-quality generation
-        response = await submit_to_worker(
+        llm_response = await submit_to_worker(
             messages=messages,
             model=settings.claude_model,  # Sonnet
             max_tokens=8000,
             estimated_output_tokens=4000,
         )
-        return response.content
+        return {
+            "draft": llm_response.message.content,
+            "token_usage": {
+                "input_tokens": llm_response.token_usage.input_tokens,
+                "output_tokens": llm_response.token_usage.output_tokens,
+                "model": llm_response.token_usage.model,
+            }
+        }
 
     def _build_prompt(
         self,

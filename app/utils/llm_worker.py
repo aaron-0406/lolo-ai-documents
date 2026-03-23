@@ -35,6 +35,21 @@ class ModelUsage:
 
 
 @dataclass
+class TokenUsage:
+    """Token usage from an LLM response."""
+    input_tokens: int
+    output_tokens: int
+    model: str
+
+
+@dataclass
+class LLMResponse:
+    """Response from LLM including the message and token usage."""
+    message: Any  # The AIMessage from the LLM
+    token_usage: TokenUsage
+
+
+@dataclass
 class LLMRequest:
     """A request waiting in the queue."""
     model: str
@@ -164,8 +179,8 @@ class LLMWorker:
         # Rough estimate: 1 token ≈ 4 characters
         return total_chars // 4
 
-    async def _process_request(self, request: LLMRequest) -> Any:
-        """Process a single request, waiting if necessary."""
+    async def _process_request(self, request: LLMRequest) -> LLMResponse:
+        """Process a single request, waiting if necessary. Returns LLMResponse with token usage."""
         model = request.model
 
         async with self._lock:
@@ -211,11 +226,13 @@ class LLMWorker:
         try:
             response = await llm.ainvoke(request.messages)
 
-            # Update with actual token usage if available
-            actual_output = 0
+            # Extract actual token usage from response
+            actual_input = request.estimated_input_tokens
+            actual_output = request.estimated_output_tokens
+
             if hasattr(response, 'usage_metadata') and response.usage_metadata:
-                actual_output = response.usage_metadata.get('output_tokens', 0)
-                actual_input = response.usage_metadata.get('input_tokens', 0)
+                actual_output = response.usage_metadata.get('output_tokens', actual_output)
+                actual_input = response.usage_metadata.get('input_tokens', actual_input)
 
                 async with self._lock:
                     # Adjust for actual vs estimated
@@ -225,11 +242,18 @@ class LLMWorker:
 
             logger.debug(
                 f"[LLM Worker] Completed {model} request. "
+                f"Actual tokens: {actual_input} input, {actual_output} output. "
                 f"Usage: {self.usage[model].requests} req, "
                 f"{self.usage[model].output_tokens} output tokens"
             )
 
-            return response
+            # Return both the response and token usage
+            token_usage = TokenUsage(
+                input_tokens=actual_input,
+                output_tokens=actual_output,
+                model=model,
+            )
+            return LLMResponse(message=response, token_usage=token_usage)
 
         except Exception as e:
             # On error, release the reserved capacity
@@ -291,7 +315,7 @@ class LLMWorker:
         max_tokens: int = 4096,
         temperature: float = 0.3,
         estimated_output_tokens: int = 2000,
-    ) -> Any:
+    ) -> LLMResponse:
         """
         Submit a request to the worker queue.
 
@@ -303,7 +327,7 @@ class LLMWorker:
             estimated_output_tokens: Estimated output tokens (for rate limiting)
 
         Returns:
-            The LLM response
+            LLMResponse containing the message and token usage
 
         Raises:
             ValueError: If estimated tokens exceed the model's limit
@@ -371,11 +395,12 @@ async def submit_to_worker(
     max_tokens: int = 4096,
     temperature: float = 0.3,
     estimated_output_tokens: int = 2000,
-) -> Any:
+) -> LLMResponse:
     """
     Convenience function to submit a request to the global worker.
 
     This is the main entry point for making LLM calls throughout the application.
+    Returns LLMResponse with both the message and token usage.
     """
     return await llm_worker.submit(
         messages=messages,

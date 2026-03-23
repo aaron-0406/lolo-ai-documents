@@ -13,7 +13,7 @@ from loguru import logger
 from app.config import settings
 from app.models.requests import GenerateRequest
 from app.models.responses import GenerateResponse
-from app.agents.orchestration.generator_agent import GeneratorAgent
+from app.agents.orchestration.generator_agent import GeneratorAgent, TokenTrackingContext
 from app.api.routes.document_types import get_document_type_by_key
 from app.services.annex_service import AnnexService
 from app.utils.exceptions import CaseFileNotFoundError, InvalidDocumentTypeError
@@ -97,13 +97,37 @@ async def generate_document(
             logger.warning(f"Failed to set GENERATING status: {e}")
             # Continue anyway - generation should proceed
 
-        # Run generator agent (with learning application)
+        # Get user_id from session for token tracking
+        user_id = 0
+        try:
+            session_data = await mysql.get_ai_session(session_id)
+            if session_data:
+                user_id = session_data.get("created_by_customer_user_id", 0)
+        except Exception:
+            pass
+
+        # Build token tracking context for immediate token registration
+        token_tracking = None
+        if context.customer_id and context.customer_has_bank_id:
+            token_tracking = TokenTrackingContext(
+                session_id=session_id,
+                job_id=None,  # Will be set by job-based endpoint if applicable
+                judicial_case_file_id=case_file_id,
+                document_type=request_body.document_type,
+                document_name=None,  # Can be enhanced later
+                customer_id=context.customer_id,
+                customer_has_bank_id=context.customer_has_bank_id,
+                created_by_customer_user_id=user_id,
+            )
+
+        # Run generator agent (with learning application and immediate token tracking)
         generator = GeneratorAgent()
         result = await generator.generate(
             document_type=request_body.document_type,
             context=context,
             custom_instructions=request_body.custom_instructions,
             session_id=session_id,  # Pass session_id for learning tracking
+            token_tracking=token_tracking,  # Pass for immediate token registration
         )
 
         # CRITICAL: Save draft to MySQL BEFORE returning response
@@ -164,6 +188,16 @@ async def generate_document(
                 # Continue without annexes - not critical
 
         logger.info(f"Generated document, session {session_id}")
+
+        # NOTE: Token usage is now tracked immediately during generation
+        # via the TokenTrackingContext passed to GeneratorAgent.
+        # The record ID is available in result.token_record_id if needed.
+        total_input = result.token_usage.get("total_input_tokens", 0)
+        total_output = result.token_usage.get("total_output_tokens", 0)
+        logger.info(
+            f"Token usage (immediate tracking): {total_input} input, {total_output} output "
+            f"({len(result.token_usage.get('breakdown', []))} agents)"
+        )
 
         # Build response with learning info
         response = GenerateResponse(
