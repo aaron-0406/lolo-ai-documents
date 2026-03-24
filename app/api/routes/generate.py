@@ -145,6 +145,8 @@ async def generate_document(
                 session_id=session_id,
                 role="assistant",
                 content=result.ai_message,
+                response_type="edit",
+                has_document_changes=True,
             )
         except Exception as e:
             logger.error(f"Failed to save draft/message to MySQL: {e}")

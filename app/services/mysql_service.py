@@ -570,6 +570,8 @@ class MySQLService:
         session_id: str,
         role: str,
         content: str,
+        response_type: str | None = None,
+        has_document_changes: bool | None = None,
     ) -> bool:
         """
         Add a message to the session's conversation history.
@@ -578,6 +580,8 @@ class MySQLService:
             session_id: The session identifier
             role: 'user' or 'assistant'
             content: Message content
+            response_type: For assistant messages - 'informational' or 'edit'
+            has_document_changes: For assistant messages - whether document was modified
 
         Returns:
             True if updated, False if session not found
@@ -586,6 +590,7 @@ class MySQLService:
             raise RuntimeError("MySQL not connected")
 
         import json
+        import uuid
         from datetime import datetime
 
         async with self._pool.acquire() as conn:
@@ -608,12 +613,22 @@ class MySQLService:
                 if not isinstance(history, list):
                     history = []
 
-                # Add new message
-                history.append({
+                # Build message object
+                message = {
+                    "id": str(uuid.uuid4()),
                     "role": role,
                     "content": content,
                     "timestamp": datetime.utcnow().isoformat(),
-                })
+                }
+
+                # Add optional fields for assistant messages
+                if role == "assistant":
+                    if response_type is not None:
+                        message["responseType"] = response_type
+                    if has_document_changes is not None:
+                        message["hasDocumentChanges"] = has_document_changes
+
+                history.append(message)
 
                 # Update
                 await cur.execute(

@@ -222,11 +222,13 @@ async def refine_document_sync(
             )
             logger.info(f"[Sync] Draft saved for session {request_body.session_id} with {total_tokens} tokens")
 
-        # Add AI response to session history
+        # Add AI response to session history with response type info
         await mysql.add_ai_session_message(
             session_id=request_body.session_id,
             role="assistant",
             content=explanation,
+            response_type=response_type,
+            has_document_changes=has_document_changes,
         )
 
         # Schedule learning extraction in background only for actual edits
